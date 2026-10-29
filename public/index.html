@@ -19,13 +19,13 @@
     }
     * { box-sizing: border-box; }
     body {
-      margin: 0; min-height: 100vh; color: var(--cream);
+      margin: 0; min-height: 100vh; min-height: 100dvh; color: var(--cream);
       background: radial-gradient(ellipse at 50% -18%, #59405a 0%, #30283e 37%, #201b2c 72%);
       overflow-x: hidden;
     }
     button, input { font: inherit; }
     button { cursor: pointer; }
-    .app { min-height: 100vh; padding: 20px 22px 30px; display: flex; flex-direction: column; align-items: center; }
+    .app { min-height: 100vh; min-height: 100dvh; padding: 20px 22px 30px; display: flex; flex-direction: column; align-items: center; }
     .topline { width: min(1140px, 100%); display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
     .brand-mini { display:flex; align-items:center; gap:9px; color:#f9e8d2; font-size:13px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
     .brand-mini .mark { font-size:24px; filter:drop-shadow(0 3px 5px #0005); }
@@ -89,8 +89,10 @@
     .game-wrap { width:100%; }
     .game-top { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:0 0 12px; flex-wrap:wrap; }
     .game-title-block { display:flex; align-items:center; gap:12px; }
+    .game-actions { display:flex; align-items:center; gap:7px; }
     .game-title { margin:0; font-size:26px; letter-spacing:-.055em; }
     .code-chip { color:#f8ca70; font-size:12px; letter-spacing:.16em; font-weight:900; background:#ffffff0e; border:1px solid #ffffff20; padding:8px 10px; border-radius:10px; }
+    .fullscreen-btn { font-size:18px; line-height:1; padding:8px 10px; }
     .score-strip { display:flex; gap:7px; overflow:auto; padding:2px 2px 9px; scrollbar-width:thin; margin-bottom:2px; }
     .score-chip { flex:none; display:flex; align-items:center; gap:8px; background:#ffffff0e; border:1px solid #ffffff18; border-radius:12px; padding:8px 11px; min-width:104px; }
     .score-chip.me { background:#ffffff1b; border-color:#ffcf7280; box-shadow:0 0 0 1px #ffcf7220; }
@@ -134,6 +136,28 @@
       .game-top { align-items:flex-start; }
       .game-bottom { align-items:flex-start; font-size:11px; }
       .mobile-note { display:block; }
+    }
+    @media (max-width:780px) {
+      body.game-active { height:100vh; height:100dvh; min-height:0; overflow:hidden; }
+      body.game-active .app {
+        width:100%; height:100vh; height:100dvh; min-height:0;
+        padding:env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+      }
+      body.game-active .topline, body.game-active .footer { display:none; }
+      body.game-active main { width:100%; flex:1; min-height:0; }
+      body.game-active .game-wrap { height:100%; min-height:0; display:flex; flex-direction:column; gap:8px; }
+      body.game-active .game-top { flex:none; flex-wrap:nowrap; align-items:center; gap:7px; margin:0; }
+      body.game-active .game-title-block { min-width:0; gap:7px; }
+      body.game-active .game-title { font-size:20px; white-space:nowrap; }
+      body.game-active .code-chip { font-size:9px; letter-spacing:.08em; padding:6px 7px; white-space:nowrap; }
+      body.game-active .game-actions .copy-btn { flex:none; padding:7px 9px; white-space:nowrap; }
+      body.game-active .score-strip { flex:none; margin:0; padding:0 2px 3px; }
+      body.game-active .game-shell { flex:1; min-height:0; width:100%; display:grid; place-items:center; border-radius:12px; }
+      body.game-active canvas { width:100%; height:100%; aspect-ratio:auto; }
+      body.game-active .game-bottom { flex:none; margin:0; padding:0 2px; align-items:center; }
+      body.game-active .howto { max-width:70%; }
+      body.game-active .mobile-note { flex:none; margin:0 2px; font-size:10px; }
+      body.game-active .game-over { border-radius:10px; }
     }
     @media (max-width:430px) {
       .player-list { grid-template-columns:1fr 1fr; }
@@ -218,6 +242,7 @@
       room = null; playerId = null; sessionKey = null; roomCode = null; isHost = false; reconnecting = false; view = 'home'; renderHome();
     }
     function renderHome() {
+      document.body.classList.remove('game-active');
       view = 'home';
       main.innerHTML = `<section class="view landing">
         <div class="hero">
@@ -257,6 +282,7 @@
     }
     function renderLobby() {
       if (!room || view === 'game') return;
+      document.body.classList.remove('game-active');
       view = 'lobby';
       isHost = room.hostId === playerId;
       const players = room.players.map(p => `<div class="player-card" style="${p.connected === false ? 'opacity:.55' : ''}"><span class="player-dot" style="--player-color:${p.color}"></span><span class="player-name">${esc(p.name)}${p.id === playerId ? ' (you)' : p.connected === false ? ' · reconnecting' : ''}</span>${p.id === room.hostId ? '<span class="host-mark">HOST</span>' : ''}</div>`).join('');
@@ -291,12 +317,27 @@
     }
 
     let canvas, ctx, gameFrame, lastEffectLabel = '';
+    document.addEventListener('fullscreenchange', () => {
+      const button = document.getElementById('fullscreen-game');
+      if (button) {
+        const label = document.fullscreenElement ? 'Exit fullscreen' : 'Enter fullscreen';
+        button.setAttribute('aria-label', label); button.title = label;
+      }
+    });
+    async function toggleFullscreen() {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+        else showToast('Fullscreen is not available in this browser. Rotate your phone sideways for a larger table.');
+      } catch { showToast('Fullscreen is not available here. Rotate your phone sideways for a larger table.'); }
+    }
     function renderGame() {
       if (!room) return;
+      document.body.classList.add('game-active');
       if (view !== 'game') {
         view = 'game';
         main.innerHTML = `<section class="view game-wrap">
-          <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">FIRST TO 100 · ${esc(room.code)}</span></div><button id="leave-game" class="copy-btn">Leave</button></div>
+          <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">FIRST TO 100 · ${esc(room.code)}</span></div><div class="game-actions"><button id="fullscreen-game" class="copy-btn fullscreen-btn" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button><button id="leave-game" class="copy-btn">Leave</button></div></div>
           <div class="score-strip" id="score-strip"></div>
           <div class="game-shell"><canvas id="game-canvas" width="1000" height="700" aria-label="Shared diner game table"></canvas><div class="effect-banner" id="effect-banner"></div><div class="game-over" id="game-over"></div></div>
           <div class="game-bottom"><div class="howto"><span class="hand">👆</span><span>Tap food to catch · swipe from it toward your tray to toss</span></div><span class="held-status" id="held-status"></span></div>
@@ -307,6 +348,9 @@
         canvas.addEventListener('pointermove', onPointerMove);
         canvas.addEventListener('pointerup', onPointerUp);
         canvas.addEventListener('pointercancel', onPointerUp);
+        const fullscreenButton = document.getElementById('fullscreen-game');
+        if (!document.fullscreenEnabled || !document.documentElement.requestFullscreen) fullscreenButton.hidden = true;
+        else fullscreenButton.onclick = toggleFullscreen;
         document.getElementById('leave-game').onclick = goHome;
         cancelAnimationFrame(gameFrame); animate();
       }
@@ -344,17 +388,26 @@
       const rect = canvas.getBoundingClientRect();
       return { x:(e.clientX-rect.left)*1000/rect.width, y:(e.clientY-rect.top)*700/rect.height };
     }
+    function screenDistance(a,b) {
+      const rect=canvas.getBoundingClientRect();
+      return Math.hypot((a.x-b.x)*rect.width/1000,(a.y-b.y)*rect.height/700);
+    }
+    function screenScaleY() { return canvas.getBoundingClientRect().height/700; }
+    function canvasXCompensation() {
+      const rect=canvas.getBoundingClientRect();
+      return rect.width ? (rect.height/700)/(rect.width/1000) : 1;
+    }
     function onPointerDown(e) {
       if (!room || room.status !== 'playing') return;
       const p = canvasPoint(e); canvas.setPointerCapture(e.pointerId);
       const held = room.objects.find(o => o.heldBy === playerId);
       if (held) {
-        if (Math.hypot(p.x-held.x,p.y-held.y) >= 74) return;
-        gesture = { start:p, end:p, pointerId:e.pointerId };
+        if (screenDistance(p,held) >= 74*screenScaleY()) return;
+        gesture = { start:{x:held.x,y:held.y}, end:p, pointerId:e.pointerId };
         updateGameUI(); return;
       }
-      const target = room.objects.filter(o => !o.heldBy && !o.thrown).sort((a,b) => Math.hypot(a.x-p.x,a.y-p.y)-Math.hypot(b.x-p.x,b.y-p.y))[0];
-      if (target && Math.hypot(target.x-p.x,target.y-p.y) < Math.max(46,target.radius+18)) send({type:'catch',id:target.id});
+      const target = room.objects.filter(o => !o.heldBy && !o.thrown).sort((a,b) => screenDistance(a,p)-screenDistance(b,p))[0];
+      if (target && screenDistance(target,p) < Math.max(46,target.radius+18)*screenScaleY()) send({type:'catch',id:target.id});
     }
     function onPointerMove(e) { if (gesture && gesture.pointerId === e.pointerId) { gesture.end = canvasPoint(e); } }
     function onPointerUp(e) {
@@ -363,6 +416,9 @@
       const dx = gesture.end.x-gesture.start.x, dy=gesture.end.y-gesture.start.y, length=Math.hypot(dx,dy);
       gesture = null; updateGameUI();
       if (length > 15) send({type:'toss',dx,dy,power:Math.min(1,length/170)});
+    }
+    function canvasText(text,x,y) {
+      ctx.save();ctx.translate(x,y);ctx.scale(canvasXCompensation(),1);ctx.fillText(text,0,0);ctx.restore();
     }
     function rounded(x,y,w,h,r,fill,stroke) {
       ctx.beginPath(); ctx.roundRect(x,y,w,h,r);
@@ -376,7 +432,7 @@
       for(let i=0;i<18;i++){ctx.beginPath();ctx.moveTo(i*73-30,0);ctx.lineTo(i*73+120,700);ctx.stroke();}
       ctx.restore();
       ctx.save();ctx.strokeStyle='#e4d7aa55';ctx.setLineDash([9,13]);ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(500,330,300,210,0,0,Math.PI*2);ctx.stroke();ctx.restore();
-      ctx.fillStyle='#fff2d844';ctx.font='900 15px system-ui';ctx.textAlign='center';ctx.fillText('THE FLYING FOOD ZONE',500,42);
+      ctx.fillStyle='#fff2d844';ctx.font='900 15px system-ui';ctx.textAlign='center';canvasText('THE FLYING FOOD ZONE',500,42);
     }
     function drawTray(tray) {
       const player=room.players.find(p=>p.id===tray.id); if(!player)return;
@@ -384,14 +440,15 @@
       ctx.save();ctx.shadowColor='#14252088';ctx.shadowBlur=12;ctx.shadowOffsetY=6;
       rounded(x,y,w,60,14,'#e8bf87','#fff3d4');ctx.restore();
       rounded(x+5,y+5,w-10,49,10,'#ffffff1a',null);
-      ctx.fillStyle=player.color;ctx.beginPath();ctx.arc(tray.x,y+16,5,0,Math.PI*2);ctx.fill();
-      ctx.fillStyle='#2e2931';ctx.font='900 12px system-ui';ctx.textAlign='center';ctx.fillText(player.name.length>12?player.name.slice(0,11)+'…':player.name,tray.x,y+37);
-      ctx.fillStyle='#59443d';ctx.font='800 9px system-ui';ctx.fillText('YOUR TRAY',tray.x,y+51);
+      ctx.fillStyle=player.color;ctx.save();ctx.translate(tray.x,y+16);ctx.scale(canvasXCompensation(),1);ctx.beginPath();ctx.arc(0,0,5,0,Math.PI*2);ctx.fill();ctx.restore();
+      ctx.fillStyle='#2e2931';ctx.font='900 12px system-ui';ctx.textAlign='center';canvasText(player.name.length>12?player.name.slice(0,11)+'…':player.name,tray.x,y+37);
+      ctx.fillStyle='#59443d';ctx.font='800 9px system-ui';canvasText('YOUR TRAY',tray.x,y+51);
     }
     function drawFood(obj) {
       ctx.save();
       const held=obj.heldBy===playerId;
       ctx.translate(obj.x,obj.y);ctx.rotate(Math.sin(obj.wobble)*.12);
+      ctx.scale(canvasXCompensation(),1);
       ctx.shadowColor=held?'#fff4b9':'#17251f77';ctx.shadowBlur=held?22:9;ctx.shadowOffsetY=4;
       ctx.beginPath();ctx.ellipse(0,0,obj.radius+3,obj.radius*.78+3,0,0,Math.PI*2);
       ctx.fillStyle=held?'#fff1b5':'#f6eadb';ctx.fill();
@@ -406,7 +463,7 @@
       if (!room.kitty) return;
       const cat=room.kitty;
       ctx.save();ctx.translate(cat.x,cat.y);ctx.scale(cat.direction,1);
-      ctx.font='52px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.shadowColor='#17112388';ctx.shadowBlur=12;ctx.fillText('🐈',0,0);
+      ctx.font='52px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.shadowColor='#17112388';ctx.shadowBlur=12;canvasText('🐈',0,0);
       ctx.restore();
     }
     function drawGesture() {
@@ -422,7 +479,7 @@
       room.trays?.forEach(drawTray);
       room.objects?.forEach(drawFood);drawKitty();drawGesture();
       if (room.status==='playing' && !room.objects.some(o=>o.heldBy===playerId)) {
-        ctx.save();ctx.fillStyle='#fff6d99b';ctx.font='800 12px system-ui';ctx.textAlign='center';ctx.fillText('TAP A SNACK TO CATCH IT',500,680);ctx.restore();
+        ctx.save();ctx.fillStyle='#fff6d99b';ctx.font='800 12px system-ui';ctx.textAlign='center';canvasText('TAP A SNACK TO CATCH IT',500,680);ctx.restore();
       }
     }
     function animate() { if(view!=='game')return;draw();gameFrame=requestAnimationFrame(animate); }

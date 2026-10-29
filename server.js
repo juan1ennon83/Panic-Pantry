@@ -180,10 +180,12 @@ function handleMessage(peer, message) {
   if (message.type === 'toss' && room.status === 'playing') {
     const object = room.objects.find(o => o.heldBy === player.id);
     if (!object) return;
-    const dx = Math.max(-1, Math.min(1, Number(message.dx) || 0));
-    const dy = Math.max(-1, Math.min(1, Number(message.dy) || 0));
-    const length = Math.hypot(dx, dy) || 1;
-    const speed = Math.min(15, 5.8 + Math.min(1, Number(message.power) || 0) * 8);
+    const dx = Number(message.dx), dy = Number(message.dy);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    const length = Math.hypot(dx, dy);
+    if (!Number.isFinite(length) || length < 1e-6) return;
+    const charge = Math.max(0, Math.min(1, Number(message.power) || 0));
+    const speed = 5.8 + charge * 8;
     object.vx = (dx / length) * speed; object.vy = (dy / length) * speed;
     object.heldBy = null; object.thrownBy = player.id; object.thrown = true;
     object.createdAt = Date.now();
