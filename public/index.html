@@ -136,6 +136,7 @@
     .selfie-secondary { background:#e8dacb; color:#35283a; }
     .selfie-cancel { margin-top:11px; border:0; background:transparent; color:#786b7a; font-weight:800; padding:8px 12px; }
     .sound-toggle { width:38px; height:36px; display:grid; place-items:center; padding:7px; font-size:17px; }
+    .sound-toggle:disabled { opacity:.5; cursor:not-allowed; }
     .mobile-note { display:none; color:#c9bdd0; font-size:11px; margin:9px 2px 0; }
     .footer { width:min(1080px,100%); padding-top:16px; display:flex; justify-content:space-between; gap:12px; color:#94879c; font-size:10px; }
     .footer span:last-child { text-align:right; }
@@ -210,7 +211,7 @@
   (() => {
     const main = document.getElementById('main');
     const socketUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
-    let ws, playerId = null, sessionKey = null, roomCode = null, isHost = false, room = null, view = 'home', playerName = '', toastTimer, gesture = null, reconnectTimer = null, reconnectAttempts = 0, reconnecting = false, pendingJoin = null, cameraStream = null, capturedSelfie = null, audioContext = null, masterGain = null, audioMuted = false, musicTimer = null, musicStep = 0, lastSlideSound = 0;
+    let ws, playerId = null, sessionKey = null, roomCode = null, isHost = false, room = null, view = 'home', playerName = '', toastTimer, gesture = null, reconnectTimer = null, reconnectAttempts = 0, reconnecting = false, pendingJoin = null, joinAttemptTimer = null, cameraStream = null, capturedSelfie = null, audioContext = null, masterGain = null, audioMuted = false, musicTimer = null, musicStep = 0, lastSlideSound = 0;
     const avatarImages = new Map();
     const heardScoreEvents = new Set();
     const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -238,14 +239,19 @@
         catch { scheduleReconnect(); }
       }, delay);
     }
-    function send(packet) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(packet)); }
+    function send(packet) {
+      if (ws?.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify(packet)); return true;
+    }
     function handle(data) {
       if (data.type === 'welcome') {
         playerId = data.playerId; sessionKey = data.sessionKey; roomCode = data.code; isHost = data.host;
         reconnecting = false; reconnectAttempts = 0; clearTimeout(reconnectTimer); reconnectTimer = null;
+        if (pendingJoin?.sent && ['create','join'].includes(pendingJoin.type)) closeSelfieStep();
       }
       else if (data.type === 'error') {
-        if (reconnecting) {
+        if (pendingJoin?.submitting || pendingJoin?.sent) showRoomEntryFailure(data.message);
+        else if (reconnecting) {
           reconnecting = false; sessionKey = null; roomCode = null; playerId = null; room = null;
           showToast(data.message); renderHome();
         } else showError(data.message);
@@ -255,11 +261,12 @@
         for (const event of data.scoreEvents || []) {
           if (!heardScoreEvents.has(event.id)) { heardScoreEvents.add(event.id); playScoreSound(event.points); }
         }
-        if (data.status === 'playing') startPartyMusic();
+        if (['lobby','playing'].includes(data.status)) startPartyMusic();
         else stopPartyMusic();
         isHost = data.hostId === playerId;
         if (data.status === 'lobby') renderLobby();
         else renderGame();
+        syncSoundButtons();
       }
     }
     function showError(message) {
@@ -268,13 +275,19 @@
       else showToast(message);
     }
     function getAudioContext() {
+      if (audioContext?.state === 'closed') { audioContext = null; masterGain = null; }
       if (audioContext) return audioContext;
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return null;
       try {
         audioContext = new AudioContextClass();
-        masterGain = audioContext.createGain(); masterGain.gain.value = audioMuted ? 0 : 0.14;
+        masterGain = audioContext.createGain(); masterGain.gain.value = audioMuted ? 0 : 0.55;
         masterGain.connect(audioContext.destination);
+        audioContext.addEventListener('statechange', () => {
+          if (audioContext?.state === 'running') startPartyMusic();
+          else stopPartyMusic();
+          syncSoundButtons();
+        });
       } catch { audioContext = null; masterGain = null; }
       return audioContext;
     }
@@ -302,8 +315,8 @@
     function activateAudio() {
       const ac=getAudioContext();
       if (!ac || audioMuted) return;
-      if (ac.state==='suspended') ac.resume().then(() => { if (room?.status==='playing') startPartyMusic(); }).catch(() => {});
-      else if (room?.status==='playing') startPartyMusic();
+      if (ac.state!=='running') ac.resume().then(() => { startPartyMusic(); syncSoundButtons(); }).catch(() => syncSoundButtons());
+      else startPartyMusic();
     }
     function playSlideSound() {
       const now=performance.now();
@@ -337,17 +350,20 @@
       if (partyMelody[step]) playTone(partyMelody[step],0.12,'square',0.038);
     }
     function startPartyMusic() {
-      if (audioMuted || room?.status!=='playing' || musicTimer) return;
+      if (audioMuted || !['lobby','playing'].includes(room?.status) || musicTimer) return;
       const ac=getAudioContext();
       if (!ac) return;
-      if (ac.state==='suspended') { activateAudio(); return; }
+      if (ac.state!=='running') { activateAudio(); return; }
       musicStep=0; playPartyStep(); musicTimer=setInterval(playPartyStep,125);
     }
     function stopPartyMusic() { clearInterval(musicTimer); musicTimer=null; musicStep=0; }
     function syncSoundButtons() {
       document.querySelectorAll('[data-sound-toggle]').forEach(button => {
-        const label=audioMuted?'Turn sounds on':'Mute sounds';
-        button.textContent=audioMuted?'🔇':'🔊'; button.setAttribute('aria-label',label); button.title=label; button.setAttribute('aria-pressed',String(!audioMuted));
+        const unsupported=!(window.AudioContext || window.webkitAudioContext);
+        const waitingForTap=!audioMuted && !unsupported && ['lobby','playing'].includes(room?.status) && audioContext?.state!=='running';
+        const label=unsupported?'Sound is not supported in this browser':audioMuted?'Turn sounds on':waitingForTap?'Tap to start sounds':'Mute sounds';
+        button.disabled=unsupported;
+        button.textContent=unsupported || audioMuted?'🔇':waitingForTap?'🔈':'🔊'; button.setAttribute('aria-label',label); button.title=label; button.setAttribute('aria-pressed',String(!unsupported && !audioMuted && !waitingForTap));
       });
     }
     function bindSoundButtons() {
@@ -355,14 +371,16 @@
       syncSoundButtons();
     }
     function toggleSound() {
-      audioMuted=!audioMuted;
       const ac=getAudioContext();
+      if (!audioMuted && (!ac || ac.state!=='running')) {
+        activateAudio(); syncSoundButtons(); return;
+      }
+      audioMuted=!audioMuted;
       if (ac && masterGain) {
-        if (ac.state==='suspended' && !audioMuted) ac.resume().catch(() => {});
-        masterGain.gain.setTargetAtTime(audioMuted?0:0.14,ac.currentTime,0.03);
+        masterGain.gain.setTargetAtTime(audioMuted?0:0.55,ac.currentTime,0.03);
       }
       if (audioMuted) stopPartyMusic();
-      else if (room?.status==='playing') startPartyMusic();
+      else activateAudio();
       syncSoundButtons();
     }
     function stopSelfieCamera() {
@@ -372,9 +390,32 @@
       if (video) video.srcObject = null;
     }
     function closeSelfieStep() {
+      clearTimeout(joinAttemptTimer); joinAttemptTimer = null;
       stopSelfieCamera();
       document.getElementById('selfie-modal')?.remove();
       pendingJoin = null; capturedSelfie = null;
+    }
+    function showRoomEntryFailure(message, keepSent=false) {
+      clearTimeout(joinAttemptTimer); joinAttemptTimer = null;
+      if (!pendingJoin) return;
+      pendingJoin.submitting = false;
+      if (!keepSent) pendingJoin.sent = false;
+      stopSelfieCamera();
+      const status = document.getElementById('selfie-status');
+      const startButton = document.getElementById('selfie-camera-start');
+      const captureButton = document.getElementById('selfie-capture');
+      const retakeButton = document.getElementById('selfie-retake');
+      const video = document.getElementById('selfie-video');
+      const preview = document.getElementById('selfie-preview');
+      if (status) status.textContent = message;
+      if (video) video.hidden = true;
+      if (startButton) { startButton.disabled = false; startButton.hidden = Boolean(capturedSelfie); }
+      if (preview) preview.hidden = !capturedSelfie;
+      if (captureButton) { captureButton.disabled = false; captureButton.hidden = !capturedSelfie; captureButton.textContent = 'Join with selfie'; captureButton.onclick = () => finishSelfieStep(capturedSelfie); }
+      if (retakeButton) { retakeButton.disabled = false; retakeButton.hidden = !capturedSelfie; }
+      for (const id of ['selfie-continue','selfie-cancel']) {
+        const button = document.getElementById(id); if (button) button.disabled = false;
+      }
     }
     function openSelfieStep(type, name, code) {
       pendingJoin = { type, name, code };
@@ -396,8 +437,8 @@
       document.getElementById('selfie-retake').onclick = retakeSelfie;
       document.getElementById('selfie-continue').onclick = () => finishSelfieStep(null);
       document.getElementById('selfie-cancel').onclick = closeSelfieStep;
-      modal.addEventListener('click', e => { if (e.target === modal) closeSelfieStep(); });
-      modal.addEventListener('keydown', e => { if (e.key === 'Escape') closeSelfieStep(); });
+      modal.addEventListener('click', e => { if (e.target === modal && !pendingJoin?.submitting) closeSelfieStep(); });
+      modal.addEventListener('keydown', e => { if (e.key === 'Escape' && !pendingJoin?.submitting) closeSelfieStep(); });
       document.getElementById('selfie-camera-start').focus();
     }
     async function startSelfieCamera() {
@@ -457,16 +498,27 @@
       document.getElementById('selfie-status').textContent = 'Turn the front camera on again to retake your selfie.';
     }
     async function finishSelfieStep(avatar) {
-      if (!pendingJoin) return;
+      if (!pendingJoin || pendingJoin.submitting) return;
       const action = pendingJoin;
-      pendingJoin = null; capturedSelfie = null;
-      closeSelfieStep();
-      if (action.type === 'update') { send({type:'avatar',avatar}); return; }
+      if (action.type === 'update') { closeSelfieStep(); send({type:'avatar',avatar}); return; }
+      capturedSelfie = avatar || null;
+      action.submitting = true;
       const packet = { type:action.type, name:action.name, avatar };
       if (action.type === 'join') packet.code = action.code;
+      stopSelfieCamera();
+      const status = document.getElementById('selfie-status');
+      if (status) status.textContent = 'Joining the kitchen…';
+      for (const id of ['selfie-camera-start','selfie-capture','selfie-retake','selfie-continue','selfie-cancel']) {
+        const button = document.getElementById(id); if (button) button.disabled = true;
+      }
+      joinAttemptTimer = setTimeout(() => showRoomEntryFailure('The kitchen didn’t reply. Check your connection and try again.', true), 15000);
       activateAudio();
-      try { await connect(); send(packet); view='lobby'; }
-      catch (e) { showError(e.message); }
+      try {
+        await connect();
+        if (pendingJoin !== action || !action.submitting) return;
+        action.sent = true;
+        if (!send(packet)) throw new Error('The kitchen connection dropped. Try joining again.');
+      } catch (e) { showRoomEntryFailure(e.message); }
     }
     function showToast(message) {
       let toast = document.getElementById('toast');

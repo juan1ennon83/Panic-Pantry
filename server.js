@@ -123,7 +123,8 @@ function disconnectPeer(peer) {
 }
 function enterRoom(peer, room, name, avatarData) {
   if (room.players.length >= 8) return sendError(peer, 'This kitchen is full. The party tops out at 8 players.');
-  if (room.status !== 'lobby') return sendError(peer, 'That match is already sizzling. Join before the host starts!');
+  if (room.status === 'playing') return sendError(peer, 'That round is already underway. Ask the host to start a new round after everyone joins.');
+  if (room.status === 'over') return sendError(peer, 'That round has ended. Ask the host to start another round after everyone joins.');
   const player = {
     id: crypto.randomUUID(), sessionKey: crypto.randomUUID(), avatarToken: crypto.randomUUID(),
     avatar: decodeAvatar(avatarData), name: safeName(name), color: COLORS[room.players.length], score: 0, connected: true,
@@ -178,7 +179,7 @@ function handleMessage(peer, message) {
   if (message.type === 'join') {
     removePlayer(peer);
     const room = rooms.get(String(message.code || '').toUpperCase().trim());
-    if (!room) return sendError(peer, 'We couldn’t find that room. Check the code and try again.');
+    if (!room) return sendError(peer, 'That room code is not active. Ask the host to check it or create and share a fresh room code.');
     enterRoom(peer, room, message.name, message.avatar); return;
   }
   const room = rooms.get(peer.roomCode);
@@ -395,8 +396,18 @@ server.on('upgrade', (req, socket) => {
       if (opcode === 9) { socket.write(makeControlFrame(10, payload)); continue; }
       if (opcode === 10) { peer.isAlive = true; continue; }
       if (opcode === 1) {
-        try { handleMessage(peer, JSON.parse(payload.toString('utf8'))); }
-        catch { sendError(peer, 'That move got lost in the kitchen. Please try again.'); }
+        let message;
+        try { message = JSON.parse(payload.toString('utf8')); }
+        catch (error) {
+          console.error('WebSocket message could not be parsed:', error.message);
+          sendError(peer, 'That request could not be read. Please try again.');
+          continue;
+        }
+        try { handleMessage(peer, message); }
+        catch (error) {
+          console.error(`WebSocket ${String(message?.type || 'unknown')} request failed:`, error?.stack || error);
+          sendError(peer, 'The kitchen couldn’t process that request. Please try again.');
+        }
       }
     }
   });
