@@ -32,7 +32,9 @@ The blueprint selects Render’s free web service for a hobby deployment. Free s
 - Touch the held item and swipe toward any tray to toss it. Burgers and milkshakes score only in your tray; beers and burnt burgers subtract points from whichever tray they land in.
 - A goofy synthesized party loop plays during rounds, with a squeak while swiping and separate happy/sour sounds on tray hits. Use the speaker button to mute it.
 - Burger: +5 · Milkshake: +3 · Beer: −1 · Burnt burger: −2. Scores do not go below zero.
-- Reach 100 points first to win. A kitty appears after every 50 regular food spawns and knocks nearby items around.
+- Rounds last 3 minutes. Reach 100 points first to win; if nobody does, the highest score when time runs out wins.
+- If the score is tied at 3 minutes, sudden death starts: the first positive food into your own tray or negative food into an opponent’s tray wins for the scorer/thrower.
+- A kitty appears after every 50 regular food spawns and knocks nearby items around.
 - Fan gusts, a slippery counter, and extra-bouncy moments change the physics during the match.
 
 ## Files

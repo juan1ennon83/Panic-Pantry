@@ -7,6 +7,7 @@ const os = require('node:os');
 const PORT = Number(process.env.PORT || 4173);
 const WIDTH = 1000;
 const HEIGHT = 700;
+const GAME_DURATION_MS = 3 * 60 * 1000;
 const MAX_WEBSOCKET_MESSAGE_BYTES = 48 * 1024;
 const MAX_AVATAR_BYTES = 32 * 1024;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -54,6 +55,8 @@ function publicRoom(room) {
   return {
     type: 'room', code: room.code, status: room.status,
     scoreEvents: room.scoreEvents || [],
+    timeRemainingMs: room.status === 'lobby' ? GAME_DURATION_MS : Math.max(0, GAME_DURATION_MS - (Date.now() - (room.startedAt || Date.now()))),
+    suddenDeath: Boolean(room.suddenDeath), finishReason: room.finishReason || null,
     players: room.players.map(({ id, name, color, score, connected, avatar, avatarToken }) => ({
       id, name, color, score, connected,
       avatarUrl: avatar ? `/avatar/${room.code}/${id}/${avatarToken}` : null,
@@ -151,7 +154,7 @@ function spawnFood(room) {
 }
 function startGame(room) {
   room.status = 'playing'; room.winner = null; room.winners = []; room.spawned = 0; room.objects = [];
-  room.scoreEvents = [];
+  room.scoreEvents = []; room.suddenDeath = false; room.suddenDeathWinner = null; room.finishReason = null;
   room.effect = { kind: 'calm', label: 'The kitchen is warming up!', until: Date.now() + 2500, gustX: 0, gustY: 0 };
   room.startedAt = Date.now(); room.nextSpawn = Date.now() + 900; room.nextEffect = Date.now() + 9000;
   for (const p of room.players) p.score = 0;
@@ -221,6 +224,15 @@ function tick() {
   const now = Date.now();
   for (const room of rooms.values()) {
     if (room.status !== 'playing') continue;
+    if (!room.suddenDeath && now - room.startedAt >= GAME_DURATION_MS) {
+      const topScore = Math.max(...room.players.map(player => player.score));
+      const leaders = room.players.filter(player => player.score === topScore);
+      if (leaders.length === 1) {
+        room.status = 'over'; room.winners = [leaders[0].id]; room.winner = leaders[0].id; room.finishReason = 'time';
+        room.objects = room.objects.filter(object => !object.heldBy); broadcast(room); continue;
+      }
+      room.suddenDeath = true;
+    }
     const trays = trayPositions(room);
     if (now >= room.nextSpawn) { spawnFood(room); room.nextSpawn = now + rand(1150, 1850); }
     if (now >= room.nextEffect) {
@@ -267,13 +279,16 @@ function tick() {
       if (obj.y < obj.radius || obj.y > HEIGHT - obj.radius - 5) { obj.y = Math.max(obj.radius, Math.min(HEIGHT - obj.radius - 5, obj.y)); obj.vy *= -0.8; }
       if (obj.thrown && obj.thrownBy) {
         const targetTray = trays.find(t => obj.vy > 0 && obj.y >= t.y - 40 && obj.y <= t.y + 35 && Math.abs(obj.x - t.x) <= 54);
-        if (targetTray && (obj.points < 0 || targetTray.id === obj.thrownBy)) {
+        if (targetTray && (obj.points < 0 || targetTray.id === obj.thrownBy) && !room.suddenDeathWinner) {
           const recipient = room.players.find(p => p.id === targetTray.id);
           if (recipient) {
             const oldScore = recipient.score;
             recipient.score = Math.max(0, recipient.score + obj.points);
             if (oldScore < 100 && recipient.score >= 100) crossed100.add(recipient.id);
             room.scoreEvents.push({ id: crypto.randomUUID(), playerId: recipient.id, points: obj.points });
+            if (room.suddenDeath && (obj.points > 0 || targetTray.id !== obj.thrownBy)) {
+              room.suddenDeathWinner = obj.points > 0 ? recipient.id : obj.thrownBy;
+            }
             scored.push(obj.id);
           }
         }
@@ -299,8 +314,11 @@ function tick() {
     if (scored.length) {
       room.objects = room.objects.filter(o => !scored.includes(o.id));
       const winners = room.players.filter(p => crossed100.has(p.id));
-      if (winners.length) {
-        room.status = 'over'; room.winners = winners.map(p => p.id); room.winner = winners.length === 1 ? winners[0].id : null;
+      if (room.suddenDeathWinner) {
+        room.status = 'over'; room.winners = [room.suddenDeathWinner]; room.winner = room.suddenDeathWinner; room.finishReason = 'sudden-death';
+        room.objects = room.objects.filter(o => !o.heldBy); broadcast(room);
+      } else if (winners.length && !room.suddenDeath) {
+        room.status = 'over'; room.winners = winners.map(p => p.id); room.winner = winners.length === 1 ? winners[0].id : null; room.finishReason = 'score';
         room.objects = room.objects.filter(o => !o.heldBy); broadcast(room);
       }
     }

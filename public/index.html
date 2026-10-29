@@ -94,6 +94,13 @@
     .code-chip { color:#f8ca70; font-size:12px; letter-spacing:.16em; font-weight:900; background:#ffffff0e; border:1px solid #ffffff20; padding:8px 10px; border-radius:10px; }
     .fullscreen-btn { font-size:18px; line-height:1; padding:8px 10px; }
     .score-strip { display:flex; gap:7px; overflow:auto; padding:2px 2px 9px; scrollbar-width:thin; margin-bottom:2px; }
+    .timer-chip { position:sticky;left:0;z-index:1;flex:none;display:flex;flex-direction:column;justify-content:center;min-width:98px;padding:6px 11px;border:1px solid #ffcf7260;border-radius:12px;background:#332b3d;box-shadow:5px 0 12px #201b2c66; }
+    .timer-chip.sudden { border-color:#ff6e79b0;background:#512b42;animation:timer-pulse 1.1s ease-in-out infinite alternate; }
+    .timer-chip.final { border-color:#ffffff30;background:#292432; }
+    .timer-caption { color:#d2c5d7;font-size:8px;font-weight:950;letter-spacing:.12em;text-transform:uppercase; }
+    .timer-value { color:#ffcf72;font-size:20px;line-height:1.15;font-weight:950;font-variant-numeric:tabular-nums; }
+    .timer-chip.sudden .timer-caption,.timer-chip.sudden .timer-value { color:#ffb2b2; }
+    @keyframes timer-pulse { to { box-shadow:0 0 0 3px #ff6e7920,5px 0 12px #201b2c66; } }
     .score-chip { flex:none; display:flex; align-items:center; gap:8px; background:#ffffff0e; border:1px solid #ffffff18; border-radius:12px; padding:8px 11px; min-width:104px; }
     .score-chip.me { background:#ffffff1b; border-color:#ffcf7280; box-shadow:0 0 0 1px #ffcf7220; }
     .score-dot { width:9px;height:9px;border-radius:50%;background:var(--player-color); }
@@ -480,7 +487,7 @@
         <div class="hero">
           <div class="eyebrow">✦ The kitchen is open · 2–8 players</div>
           <h1>PANIC<span>PANTRY</span></h1>
-          <p class="hero-copy">Catch flying snacks. Flick them into your tray. Try not to feed the cat. The first diner to 100 points takes the golden spatula.</p>
+          <p class="hero-copy">Catch flying snacks and flick them into your tray. Hit 100 points first, or lead when the 3-minute timer ends. A tie triggers sudden death!</p>
           <div class="food-stamp" aria-hidden="true"><span>🍔</span><span>🥤</span><span>🍺</span><span>🐈</span></div>
         </div>
         <section class="join-card">
@@ -530,7 +537,7 @@
         <aside class="side-panel">
           <div class="side-illustration">🍔 🥤 🐈</div>
           <h3>Ready for the rush?</h3>
-          <p>Flick burgers and milkshakes into your own tray. Send beers and burnt burgers into an opponent’s tray to dock their points.</p>
+          <p>Flick burgers and milkshakes into your own tray. Send beers and burnt burgers into an opponent’s tray to dock their points. Rounds last 3 minutes: reach 100 to win, or lead on points when time runs out. If tied, the first positive food in your tray or negative food in an opponent’s tray wins.</p>
           <div class="rules-mini"><div class="rule-mini">🍔 Burger <strong>+5</strong></div><div class="rule-mini">🥤 Milkshake <strong>+3</strong></div><div class="rule-mini">🍺 Beer <strong>−1</strong></div><div class="rule-mini">🔥 Burnt burger <strong>−2</strong></div></div>
           <button id="selfie-edit" class="copy-btn" type="button" style="align-self:flex-start;margin-top:8px">📷 ${hasSelfie?'Change':'Add'} tray selfie</button>
           <button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button>
@@ -572,11 +579,11 @@
       if (view !== 'game') {
         view = 'game';
         main.innerHTML = `<section class="view game-wrap">
-          <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">FIRST TO 100 · ${esc(room.code)}</span></div><div class="game-actions"><button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button><button id="fullscreen-game" class="copy-btn fullscreen-btn" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button><button id="leave-game" class="copy-btn">Leave</button></div></div>
+          <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">TO 100 · ${esc(room.code)}</span></div><div class="game-actions"><button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button><button id="fullscreen-game" class="copy-btn fullscreen-btn" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button><button id="leave-game" class="copy-btn">Leave</button></div></div>
           <div class="score-strip" id="score-strip"></div>
           <div class="game-shell"><canvas id="game-canvas" width="1000" height="700" aria-label="Shared diner game table"></canvas><div class="effect-banner" id="effect-banner"></div><div class="game-over" id="game-over"></div></div>
           <div class="game-bottom"><div class="howto"><span class="hand">👆</span><span>Tap food to catch · swipe toward a tray to toss</span></div><span class="held-status" id="held-status"></span></div>
-          <p class="mobile-note">Good food scores in your tray; beers and burnt burgers can hit anyone’s tray.</p>
+          <p class="mobile-note">3 min · First to 100 wins. At time: high score wins, ties go sudden death. In sudden death: +food in your tray or −food in a rival’s tray wins.</p>
         </section>`;
         canvas = document.getElementById('game-canvas'); ctx = canvas.getContext('2d');
         canvas.addEventListener('pointerdown', onPointerDown);
@@ -595,13 +602,19 @@
     function updateGameUI() {
       if (!room || view !== 'game') return;
       const strip = document.getElementById('score-strip');
-      if (strip) strip.innerHTML = room.players.map(p => `<div class="score-chip ${p.id === playerId ? 'me' : ''}" style="--player-color:${p.color}"><span class="score-dot"></span><span class="score-name">${esc(p.name)}${p.id === playerId ? ' · YOU' : ''}</span><strong class="score-value">${p.score}</strong></div>`).join('');
+      if (strip) {
+        const seconds = Math.ceil(Math.max(0, room.timeRemainingMs ?? 180000) / 1000);
+        const timer = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+        const timerState = room.suddenDeath ? 'sudden' : room.status === 'over' ? 'final' : '';
+        const timerCaption = room.suddenDeath ? 'Sudden death' : room.status === 'over' ? 'Round over' : 'Time left';
+        strip.innerHTML = `<div class="timer-chip ${timerState}"><span class="timer-caption">${timerCaption}</span><strong class="timer-value">${timer}</strong></div>` + room.players.map(p => `<div class="score-chip ${p.id === playerId ? 'me' : ''}" style="--player-color:${p.color}"><span class="score-dot"></span><span class="score-name">${esc(p.name)}${p.id === playerId ? ' · YOU' : ''}</span><strong class="score-value">${p.score}</strong></div>`).join('');
+      }
       const held = room.objects.find(o => o.heldBy === playerId);
       const status = document.getElementById('held-status');
       if (status) status.textContent = gesture ? 'Flick to toss!' : held ? `Holding ${held.label} · aim for a tray` : 'Catch a snack!';
       const banner = document.getElementById('effect-banner');
       if (banner) {
-        const label = room.kitty ? 'KITTY ON THE LOOSE!' : room.effect?.kind !== 'calm' ? room.effect?.label : '';
+        const label = room.suddenDeath ? 'SUDDEN DEATH · FIRST DECISIVE TRAY HIT WINS' : room.kitty ? 'KITTY ON THE LOOSE!' : room.effect?.kind !== 'calm' ? room.effect?.label : '';
         banner.textContent = label || '';
         banner.classList.toggle('on', Boolean(label));
       }
@@ -613,7 +626,7 @@
           const winner = winners[0];
           const tied = winners.length > 1;
           const title = tied ? 'A perfect tie!' : winner?.id === playerId ? 'You got the spatula!' : `${esc(winner?.name || 'A diner')} wins!`;
-          const detail = tied ? `${winners.map(p => esc(p.name)).join(' and ')} hit 100 together.` : `${esc(winner?.name || 'A diner')} served up 100 points first.`;
+          const detail = tied ? `${winners.map(p => esc(p.name)).join(' and ')} hit 100 together.` : room.finishReason === 'time' ? `${esc(winner?.name || 'A diner')} led with ${winner?.score ?? 0} points when time ran out.` : room.finishReason === 'sudden-death' ? `${esc(winner?.name || 'A diner')} won the tiebreaker with the first decisive tray hit.` : `${esc(winner?.name || 'A diner')} served up 100 points first.`;
           over.innerHTML = `<div class="winner-card"><div class="winner-emoji">${tied ? '🤝' : '🏆'}</div><h2>${title}</h2><p>${detail}</p>${isHost ? '<button class="button" id="play-again">Another round!</button>' : '<button class="button" id="back-lobby">Back to the room</button>'}</div>`;
           document.getElementById('play-again')?.addEventListener('click', () => send({type:'start'}));
           document.getElementById('back-lobby')?.addEventListener('click', () => { showToast('Ask the host to start another round.'); });
