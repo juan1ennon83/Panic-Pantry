@@ -35,7 +35,7 @@ The blueprint selects Render’s free web service for a hobby deployment. Free s
 - In the lobby, every connected invited player votes for 3, 4, or 5 minutes; the host does not vote. The most popular length wins; ties between lengths are settled randomly. The host can start after every connected invitee has voted, then a 3-second countdown begins.
 - The chosen round length appears beside the scores. Reach 100 points first to win; if nobody does, the highest score when time runs out wins.
 - If the score is tied when the timer ends, sudden death starts: the first positive food into your own tray or negative food into an opponent’s tray wins for the scorer/thrower.
-- A kitty appears after every 50 regular food spawns and knocks nearby items around.
+- When no kitty is active, each food spawn has a 1-in-30 chance of bringing it in. It roams randomly across the whole table for five seconds; food it bumps can score in whichever tray it lands in. In sudden death, a bumped positive item wins for that tray's player.
 - Fan gusts, a slippery counter, and extra-bouncy moments change the physics during the match.
 
 ## Files

@@ -153,9 +153,15 @@ function spawnFood(room) {
     wobble: rand(0, Math.PI * 2), createdAt: Date.now(),
   };
   room.objects.push(object);
-  if (room.spawned > 0 && room.spawned % 50 === 0) {
-    const direction = Math.random() < 0.5 ? 1 : -1;
-    room.kitty = { x: direction === 1 ? -50 : WIDTH + 50, y: rand(100, HEIGHT - 220), direction, born: Date.now() };
+  if (!room.kitty && Math.random() < 1 / 30) {
+    const speed = rand(7, 11);
+    const now = Date.now();
+    room.kitty = {
+      x: rand(45, WIDTH - 45), y: rand(45, HEIGHT - 45),
+      vx: 0, vy: 0, speed,
+      targetX: rand(45, WIDTH - 45), targetY: rand(45, HEIGHT - 45),
+      nextWaypointAt: now + rand(650, 1100), expiresAt: now + 5000, radius: 32, born: now,
+    };
   }
 }
 function chooseRoundDuration(room) {
@@ -263,6 +269,7 @@ function tick() {
       const leaders = room.players.filter(player => player.score === topScore);
       if (leaders.length === 1) {
         room.status = 'over'; room.winners = [leaders[0].id]; room.winner = leaders[0].id; room.finishReason = 'time';
+        room.kitty = null;
         room.objects = room.objects.filter(object => !object.heldBy); broadcast(room); continue;
       }
       room.suddenDeath = true;
@@ -283,17 +290,39 @@ function tick() {
 
     if (room.kitty) {
       const cat = room.kitty;
-      cat.x += cat.direction * 12;
-      for (const obj of room.objects) {
-        if (obj.heldBy) continue;
-        const d = Math.hypot(obj.x - cat.x, obj.y - cat.y);
-        if (d < 145) {
-          const a = Math.atan2(obj.y - cat.y, obj.x - cat.x);
-          const impulse = (1 - d / 145) * 2.5;
-          obj.vx += Math.cos(a) * impulse; obj.vy += Math.sin(a) * impulse;
+      if (now >= cat.expiresAt) {
+        room.kitty = null;
+      } else {
+        if (now >= cat.nextWaypointAt || Math.hypot(cat.targetX - cat.x, cat.targetY - cat.y) < 20) {
+          cat.targetX = rand(cat.radius, WIDTH - cat.radius);
+          cat.targetY = rand(cat.radius, HEIGHT - cat.radius);
+          cat.speed = rand(7, 11);
+          cat.nextWaypointAt = now + rand(650, 1100);
+        }
+        const targetX = cat.targetX - cat.x, targetY = cat.targetY - cat.y;
+        const targetDistance = Math.hypot(targetX, targetY) || 1;
+        cat.vx = targetX / targetDistance * cat.speed;
+        cat.vy = targetY / targetDistance * cat.speed;
+        cat.x += cat.vx; cat.y += cat.vy;
+        if (cat.x < cat.radius || cat.x > WIDTH - cat.radius) {
+          cat.x = Math.max(cat.radius, Math.min(WIDTH - cat.radius, cat.x)); cat.vx *= -1;
+        }
+        if (cat.y < cat.radius || cat.y > HEIGHT - cat.radius) {
+          cat.y = Math.max(cat.radius, Math.min(HEIGHT - cat.radius, cat.y)); cat.vy *= -1;
+        }
+        const catSpeed = Math.hypot(cat.vx, cat.vy) || 1;
+        for (const obj of room.objects) {
+          if (obj.heldBy || obj.kittyTouched) continue;
+          const dx = obj.x - cat.x, dy = obj.y - cat.y, d = Math.hypot(dx, dy);
+          if (d < cat.radius + obj.radius) {
+            const a = d ? Math.atan2(dy, dx) : rand(0, Math.PI * 2);
+            const kick = 3 + Math.random() * 2;
+            obj.vx = Math.max(-15, Math.min(15, obj.vx + cat.vx / catSpeed * 9 + Math.cos(a) * kick));
+            obj.vy = Math.max(-15, Math.min(15, obj.vy + cat.vy / catSpeed * 9 + Math.sin(a) * kick));
+            obj.thrown = true; obj.kittyTouched = true; obj.createdAt = now;
+          }
         }
       }
-      if (cat.x < -100 || cat.x > WIDTH + 100) room.kitty = null;
     }
 
     const scored = [];
@@ -311,16 +340,16 @@ function tick() {
       obj.x += obj.vx; obj.y += obj.vy; obj.wobble += 0.09;
       if (obj.x < obj.radius || obj.x > WIDTH - obj.radius) { obj.x = Math.max(obj.radius, Math.min(WIDTH - obj.radius, obj.x)); obj.vx *= -0.82; }
       if (obj.y < obj.radius || obj.y > HEIGHT - obj.radius - 5) { obj.y = Math.max(obj.radius, Math.min(HEIGHT - obj.radius - 5, obj.y)); obj.vy *= -0.8; }
-      if (obj.thrown && obj.thrownBy) {
+      if (obj.thrown && (obj.thrownBy || obj.kittyTouched)) {
         const targetTray = trays.find(t => obj.vy > 0 && obj.y >= t.y - 40 && obj.y <= t.y + 35 && Math.abs(obj.x - t.x) <= 54);
-        if (targetTray && (obj.points < 0 || targetTray.id === obj.thrownBy) && !room.suddenDeathWinner) {
+        if (targetTray && (obj.points < 0 || targetTray.id === obj.thrownBy || obj.kittyTouched) && !room.suddenDeathWinner) {
           const recipient = room.players.find(p => p.id === targetTray.id);
           if (recipient) {
             const oldScore = recipient.score;
             recipient.score = Math.max(0, recipient.score + obj.points);
             if (oldScore < 100 && recipient.score >= 100) crossed100.add(recipient.id);
             room.scoreEvents.push({ id: crypto.randomUUID(), playerId: recipient.id, points: obj.points });
-            if (room.suddenDeath && (obj.points > 0 || targetTray.id !== obj.thrownBy)) {
+            if (room.suddenDeath && (obj.points > 0 || (obj.thrownBy && targetTray.id !== obj.thrownBy))) {
               room.suddenDeathWinner = obj.points > 0 ? recipient.id : obj.thrownBy;
             }
             scored.push(obj.id);
@@ -350,9 +379,11 @@ function tick() {
       const winners = room.players.filter(p => crossed100.has(p.id));
       if (room.suddenDeathWinner) {
         room.status = 'over'; room.winners = [room.suddenDeathWinner]; room.winner = room.suddenDeathWinner; room.finishReason = 'sudden-death';
+        room.kitty = null;
         room.objects = room.objects.filter(o => !o.heldBy); broadcast(room);
       } else if (winners.length && !room.suddenDeath) {
         room.status = 'over'; room.winners = winners.map(p => p.id); room.winner = winners.length === 1 ? winners[0].id : null; room.finishReason = 'score';
+        room.kitty = null;
         room.objects = room.objects.filter(o => !o.heldBy); broadcast(room);
       }
     }

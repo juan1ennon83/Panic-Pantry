@@ -84,6 +84,7 @@
     .rules-mini { display:grid; gap:8px; margin:17px 0; }
     .rule-mini { display:flex; gap:9px; align-items:center; font-size:12px; color:#e9deea; }
     .rule-mini strong { color:#ffd278; }
+    .kitty-note { margin:0 0 6px !important;font-size:11px !important;line-height:1.4 !important; }
     .duration-poll { margin-top:16px; }
     .duration-poll-title { color:#ffd278;font-size:12px;font-weight:900;letter-spacing:.04em; }
     .duration-options { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px; }
@@ -625,6 +626,7 @@
           <h3>Ready for the rush?</h3>
           <p>Invited players vote for a 3, 4, or 5 minute round; the host sits out. The most popular time wins, with tied votes settled randomly. Reach 100 first, or lead on points when time runs out. A tied score triggers sudden death.</p>
           <div class="rules-mini"><div class="rule-mini">🍔 Burger <strong>+5</strong></div><div class="rule-mini">🥤 Milkshake <strong>+3</strong></div><div class="rule-mini">🍺 Beer <strong>−1</strong></div><div class="rule-mini">🔥 Burnt burger <strong>−2</strong></div></div>
+          <p class="kitty-note">🐈 When no kitty is active, each food spawn has a 1-in-30 chance of bringing it in. It roams for five seconds and flings any food it bumps; bumped food can score in any tray.</p>
           <div class="duration-poll"><div class="duration-poll-title">${isHost ? 'Invitees choose the round length' : 'Pick the round length'}</div><div class="duration-options">${voteOptions}</div><p class="duration-poll-note">${voteNote}</p></div>
           <button id="selfie-edit" class="copy-btn" type="button" style="align-self:flex-start;margin-top:8px">📷 ${hasSelfie?'Change':'Add'} tray selfie</button>
           <button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button>
@@ -829,7 +831,7 @@
     function drawKitty() {
       if (!room.kitty) return;
       const cat=room.kitty;
-      ctx.save();ctx.translate(cat.x,cat.y);ctx.scale(cat.direction,1);
+      ctx.save();ctx.translate(cat.x,cat.y);ctx.scale(cat.vx < 0 ? -1 : 1,1);
       ctx.font='52px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.shadowColor='#17112388';ctx.shadowBlur=12;canvasText('🐈',0,0);
       ctx.restore();
     }
