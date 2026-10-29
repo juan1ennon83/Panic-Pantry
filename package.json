@@ -1,0 +1,12 @@
+{
+  "name": "panic-pantry",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time room-code party game for 2–8 players",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
