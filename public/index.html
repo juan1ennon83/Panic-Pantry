@@ -84,6 +84,14 @@
     .rules-mini { display:grid; gap:8px; margin:17px 0; }
     .rule-mini { display:flex; gap:9px; align-items:center; font-size:12px; color:#e9deea; }
     .rule-mini strong { color:#ffd278; }
+    .duration-poll { margin-top:16px; }
+    .duration-poll-title { color:#ffd278;font-size:12px;font-weight:900;letter-spacing:.04em; }
+    .duration-options { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px; }
+    .duration-vote { min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 5px;border:1px solid #ffffff24;border-radius:11px;background:#ffffff09;color:#f5eafa; }
+    .duration-vote.selected { border-color:#ffcf72a8;background:#ffcf7220;box-shadow:0 0 0 1px #ffcf7222; }
+    .duration-vote strong { font-size:13px;white-space:nowrap; }
+    .duration-vote span { color:#c9bdd0;font-size:9px;font-weight:750;white-space:nowrap; }
+    .duration-poll-note { margin:7px 0 0 !important;font-size:10px !important;line-height:1.35 !important; }
     .start-btn { margin-top:12px; background:linear-gradient(135deg,#ffa23f,#f16d68); color:#2a1b28; box-shadow:0 8px 18px #ee775146; }
     .start-btn:disabled { opacity:.45; filter:saturate(.5); cursor:not-allowed; transform:none; }
     .game-wrap { width:100%; }
@@ -110,6 +118,12 @@
     canvas { display:block; width:100%; height:auto; aspect-ratio:10/7; touch-action:none; }
     .effect-banner { position:absolute; left:50%; top:12px; transform:translate(-50%,-7px); opacity:0; pointer-events:none; transition:.25s; color:#352037; background:#ffcf72; padding:8px 13px; border-radius:99px; font-size:11px; font-weight:950; letter-spacing:.08em; text-transform:uppercase; box-shadow:0 4px 15px #1e13254d; white-space:nowrap; }
     .effect-banner.on { opacity:1; transform:translate(-50%,0); }
+    .round-countdown { position:absolute;inset:0;z-index:2;display:none;place-items:center;background:#17132199;pointer-events:none; }
+    .round-countdown.show { display:grid; }
+    .countdown-card { display:flex;flex-direction:column;align-items:center;gap:5px;color:#fff2d8;text-align:center;text-shadow:0 5px 20px #0009; }
+    .countdown-card span { font-size:clamp(12px,2vw,18px);font-weight:950;letter-spacing:.15em;text-transform:uppercase; }
+    .countdown-card strong { color:#ffcf72;font-size:clamp(86px,20vw,180px);line-height:.9;font-weight:1000;letter-spacing:-.09em;animation:countdown-pop .55s ease both; }
+    @keyframes countdown-pop { from { opacity:.25;transform:scale(1.5); } to { opacity:1;transform:scale(1); } }
     .game-bottom { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:10px; color:#c7bbcb; font-size:12px; }
     .howto { display:flex; gap:9px; align-items:center; }
     .howto .hand { font-size:18px; }
@@ -261,7 +275,7 @@
         for (const event of data.scoreEvents || []) {
           if (!heardScoreEvents.has(event.id)) { heardScoreEvents.add(event.id); playScoreSound(event.points); }
         }
-        if (['lobby','playing'].includes(data.status)) startPartyMusic();
+        if (['lobby','countdown','playing'].includes(data.status)) startPartyMusic();
         else stopPartyMusic();
         isHost = data.hostId === playerId;
         if (data.status === 'lobby') renderLobby();
@@ -350,7 +364,7 @@
       if (partyMelody[step]) playTone(partyMelody[step],0.12,'square',0.038);
     }
     function startPartyMusic() {
-      if (audioMuted || !['lobby','playing'].includes(room?.status) || musicTimer) return;
+      if (audioMuted || !['lobby','countdown','playing'].includes(room?.status) || musicTimer) return;
       const ac=getAudioContext();
       if (!ac) return;
       if (ac.state!=='running') { activateAudio(); return; }
@@ -360,7 +374,7 @@
     function syncSoundButtons() {
       document.querySelectorAll('[data-sound-toggle]').forEach(button => {
         const unsupported=!(window.AudioContext || window.webkitAudioContext);
-        const waitingForTap=!audioMuted && !unsupported && ['lobby','playing'].includes(room?.status) && audioContext?.state!=='running';
+        const waitingForTap=!audioMuted && !unsupported && ['lobby','countdown','playing'].includes(room?.status) && audioContext?.state!=='running';
         const label=unsupported?'Sound is not supported in this browser':audioMuted?'Turn sounds on':waitingForTap?'Tap to start sounds':'Mute sounds';
         button.disabled=unsupported;
         button.textContent=unsupported || audioMuted?'🔇':waitingForTap?'🔈':'🔊'; button.setAttribute('aria-label',label); button.title=label; button.setAttribute('aria-pressed',String(!unsupported && !audioMuted && !waitingForTap));
@@ -539,7 +553,7 @@
         <div class="hero">
           <div class="eyebrow">✦ The kitchen is open · 2–8 players</div>
           <h1>PANIC<span>PANTRY</span></h1>
-          <p class="hero-copy">Catch flying snacks and flick them into your tray. Hit 100 points first, or lead when the 3-minute timer ends. A tie triggers sudden death!</p>
+          <p class="hero-copy">Catch flying snacks and flick them into your tray. Vote together for a 3, 4, or 5 minute round. Hit 100 first, or lead when time ends; ties trigger sudden death!</p>
           <div class="food-stamp" aria-hidden="true"><span>🍔</span><span>🥤</span><span>🍺</span><span>🐈</span></div>
         </div>
         <section class="join-card">
@@ -570,10 +584,18 @@
       name.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('create-room').click(); });
     }
     function renderLobby() {
-      if (!room || view === 'game') return;
+      if (!room || room.status !== 'lobby') return;
       document.body.classList.remove('game-active');
       view = 'lobby';
       isHost = room.hostId === playerId;
+      const roundChoices = [3,4,5];
+      const connectedPlayers = room.players.filter(p => p.connected !== false);
+      const missingVotes = connectedPlayers.filter(p => !roundChoices.includes(p.roundVote)).length;
+      const allConnectedVoted = missingVotes === 0;
+      const voteCounts = roundChoices.map(minutes => [minutes, room.players.filter(p => p.roundVote === minutes).length]);
+      const totalVotes = voteCounts.reduce((sum, [,count]) => sum + count, 0);
+      const voteOptions = voteCounts.map(([minutes,count]) => `<button type="button" class="duration-vote ${room.players.find(p => p.id === playerId)?.roundVote === minutes ? 'selected' : ''}" data-duration="${minutes}" aria-pressed="${room.players.find(p => p.id === playerId)?.roundVote === minutes}"><strong>${minutes} min</strong><span>${count} vote${count === 1 ? '' : 's'}</span></button>`).join('');
+      const voteNote = allConnectedVoted ? `${totalVotes} vote${totalVotes === 1 ? '' : 's'} in. Tied choices are picked at random.` : `${missingVotes} player${missingVotes === 1 ? '' : 's'} still need to vote.`;
       const players = room.players.map(p => `<div class="player-card" style="${p.connected === false ? 'opacity:.55' : ''}"><span class="player-dot" style="--player-color:${p.color}"></span><span class="player-name">${esc(p.name)}${p.id === playerId ? ' (you)' : p.connected === false ? ' · reconnecting' : ''}</span>${p.id === room.hostId ? '<span class="host-mark">HOST</span>' : ''}</div>`).join('');
       const hasSelfie = Boolean(room.players.find(p => p.id === playerId)?.avatarUrl);
       main.innerHTML = `<section class="view room-layout">
@@ -589,11 +611,12 @@
         <aside class="side-panel">
           <div class="side-illustration">🍔 🥤 🐈</div>
           <h3>Ready for the rush?</h3>
-          <p>Flick burgers and milkshakes into your own tray. Send beers and burnt burgers into an opponent’s tray to dock their points. Rounds last 3 minutes: reach 100 to win, or lead on points when time runs out. If tied, the first positive food in your tray or negative food in an opponent’s tray wins.</p>
+          <p>Vote for a 3, 4, or 5 minute round. The most popular time wins; tied votes are settled randomly. Reach 100 first, or lead on points when time runs out. A tied score triggers sudden death.</p>
           <div class="rules-mini"><div class="rule-mini">🍔 Burger <strong>+5</strong></div><div class="rule-mini">🥤 Milkshake <strong>+3</strong></div><div class="rule-mini">🍺 Beer <strong>−1</strong></div><div class="rule-mini">🔥 Burnt burger <strong>−2</strong></div></div>
+          <div class="duration-poll"><div class="duration-poll-title">Pick the round length</div><div class="duration-options">${voteOptions}</div><p class="duration-poll-note">${voteNote}</p></div>
           <button id="selfie-edit" class="copy-btn" type="button" style="align-self:flex-start;margin-top:8px">📷 ${hasSelfie?'Change':'Add'} tray selfie</button>
           <button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button>
-          ${isHost ? `<button id="start-game" class="button start-btn" ${room.players.length < 2 ? 'disabled' : ''}>${room.players.length < 2 ? 'Waiting for a friend…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Waiting for the host</div>`}
+          ${isHost ? `<button id="start-game" class="button start-btn" ${room.players.length < 2 || !allConnectedVoted ? 'disabled' : ''}>${room.players.length < 2 ? 'Waiting for a friend…' : !allConnectedVoted ? 'Waiting for everyone to vote…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Vote, then wait for the host</div>`}
         </aside>
       </section>`;
       document.getElementById('copy-code').onclick = async () => {
@@ -606,6 +629,7 @@
         catch { showToast(`Invite link: ${invite}`); }
       };
       document.getElementById('start-game')?.addEventListener('click', () => { activateAudio(); send({type:'start'}); });
+      document.querySelectorAll('[data-duration]').forEach(button => button.addEventListener('click', () => send({type:'voteDuration',minutes:Number(button.dataset.duration)})));
       document.getElementById('selfie-edit').onclick = () => openSelfieStep('update',playerName);
       bindSoundButtons();
     }
@@ -633,9 +657,9 @@
         main.innerHTML = `<section class="view game-wrap">
           <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">TO 100 · ${esc(room.code)}</span></div><div class="game-actions"><button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button><button id="fullscreen-game" class="copy-btn fullscreen-btn" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button><button id="leave-game" class="copy-btn">Leave</button></div></div>
           <div class="score-strip" id="score-strip"></div>
-          <div class="game-shell"><canvas id="game-canvas" width="1000" height="700" aria-label="Shared diner game table"></canvas><div class="effect-banner" id="effect-banner"></div><div class="game-over" id="game-over"></div></div>
+          <div class="game-shell"><canvas id="game-canvas" width="1000" height="700" aria-label="Shared diner game table"></canvas><div class="effect-banner" id="effect-banner"></div><div class="round-countdown" id="round-countdown"></div><div class="game-over" id="game-over"></div></div>
           <div class="game-bottom"><div class="howto"><span class="hand">👆</span><span>Tap food to catch · swipe toward a tray to toss</span></div><span class="held-status" id="held-status"></span></div>
-          <p class="mobile-note">3 min · First to 100 wins. At time: high score wins, ties go sudden death. In sudden death: +food in your tray or −food in a rival’s tray wins.</p>
+          <p class="mobile-note">First to 100 wins. At time, high score wins; tied scores go sudden death. In sudden death: +food in your tray or −food in a rival’s tray wins.</p>
         </section>`;
         canvas = document.getElementById('game-canvas'); ctx = canvas.getContext('2d');
         canvas.addEventListener('pointerdown', onPointerDown);
@@ -655,11 +679,22 @@
       if (!room || view !== 'game') return;
       const strip = document.getElementById('score-strip');
       if (strip) {
-        const seconds = Math.ceil(Math.max(0, room.timeRemainingMs ?? 180000) / 1000);
+        const starting = room.status === 'countdown';
+        const seconds = starting ? Math.max(1, Math.ceil(Math.max(0, room.countdownRemainingMs || 0) / 1000)) : Math.ceil(Math.max(0, room.timeRemainingMs ?? 180000) / 1000);
         const timer = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
         const timerState = room.suddenDeath ? 'sudden' : room.status === 'over' ? 'final' : '';
-        const timerCaption = room.suddenDeath ? 'Sudden death' : room.status === 'over' ? 'Round over' : 'Time left';
+        const timerCaption = starting ? 'Starting in' : room.suddenDeath ? 'Sudden death' : room.status === 'over' ? 'Round over' : 'Time left';
         strip.innerHTML = `<div class="timer-chip ${timerState}"><span class="timer-caption">${timerCaption}</span><strong class="timer-value">${timer}</strong></div>` + room.players.map(p => `<div class="score-chip ${p.id === playerId ? 'me' : ''}" style="--player-color:${p.color}"><span class="score-dot"></span><span class="score-name">${esc(p.name)}${p.id === playerId ? ' · YOU' : ''}</span><strong class="score-value">${p.score}</strong></div>`).join('');
+      }
+      const countdown = document.getElementById('round-countdown');
+      if (countdown) {
+        const active = room.status === 'countdown';
+        countdown.classList.toggle('show', active);
+        const value = String(Math.max(1, Math.ceil(Math.max(0, room.countdownRemainingMs || 0) / 1000)));
+        if (active && countdown.dataset.value !== value) {
+          countdown.dataset.value = value;
+          countdown.innerHTML = `<div class="countdown-card"><span>Round starts in</span><strong>${value}</strong></div>`;
+        }
       }
       const held = room.objects.find(o => o.heldBy === playerId);
       const status = document.getElementById('held-status');

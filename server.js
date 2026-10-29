@@ -51,20 +51,24 @@ function trayPositions(room) {
   return room.players.map((p, i) => ({ id: p.id, x: gap * (i + 1), y: HEIGHT - 55, color: p.color }));
 }
 function publicRoom(room) {
+  const now = Date.now();
   const trays = trayPositions(room);
+  const durationMs = room.roundDurationMs || GAME_DURATION_MS;
   return {
     type: 'room', code: room.code, status: room.status,
     scoreEvents: room.scoreEvents || [],
-    timeRemainingMs: room.status === 'lobby' ? GAME_DURATION_MS : Math.max(0, GAME_DURATION_MS - (Date.now() - (room.startedAt || Date.now()))),
+    timeRemainingMs: ['lobby','countdown'].includes(room.status) ? durationMs : Math.max(0, durationMs - (now - (room.startedAt || now))),
+    countdownRemainingMs: room.status === 'countdown' ? Math.max(0, (room.countdownUntil || now) - now) : 0,
+    roundDurationMs: durationMs,
     suddenDeath: Boolean(room.suddenDeath), finishReason: room.finishReason || null,
-    players: room.players.map(({ id, name, color, score, connected, avatar, avatarToken }) => ({
-      id, name, color, score, connected,
+    players: room.players.map(({ id, name, color, score, connected, roundVote, avatar, avatarToken }) => ({
+      id, name, color, score, connected, roundVote: roundVote || null,
       avatarUrl: avatar ? `/avatar/${room.code}/${id}/${avatarToken}` : null,
     })),
     hostId: room.hostId,
     trays, objects: room.objects, effect: room.effect, kitty: room.kitty,
     spawned: room.spawned, winner: room.winner, winners: room.winners || [], startedAt: room.startedAt,
-    serverNow: Date.now(), width: WIDTH, height: HEIGHT,
+    serverNow: now, width: WIDTH, height: HEIGHT,
   };
 }
 
@@ -101,7 +105,7 @@ function removePlayer(peer) {
   if (!room.players.length) rooms.delete(room.code);
   else {
     if (room.hostId === peer.playerId) room.hostId = room.players.find(p => p.connected)?.id || room.players[0].id;
-    if (room.status !== 'lobby' && room.status !== 'over' && room.players.length < 2) room.status = 'lobby';
+    if (room.status !== 'lobby' && room.status !== 'over' && room.players.length < 2) { room.status = 'lobby'; room.countdownUntil = null; }
     broadcast(room);
   }
   peer.roomCode = null; peer.playerId = null;
@@ -124,10 +128,11 @@ function disconnectPeer(peer) {
 function enterRoom(peer, room, name, avatarData) {
   if (room.players.length >= 8) return sendError(peer, 'This kitchen is full. The party tops out at 8 players.');
   if (room.status === 'playing') return sendError(peer, 'That round is already underway. Ask the host to start a new round after everyone joins.');
+  if (room.status === 'countdown') return sendError(peer, 'The round is about to start. Ask the host for a new room code after this round.');
   if (room.status === 'over') return sendError(peer, 'That round has ended. Ask the host to start another round after everyone joins.');
   const player = {
     id: crypto.randomUUID(), sessionKey: crypto.randomUUID(), avatarToken: crypto.randomUUID(),
-    avatar: decodeAvatar(avatarData), name: safeName(name), color: COLORS[room.players.length], score: 0, connected: true,
+    avatar: decodeAvatar(avatarData), name: safeName(name), color: COLORS[room.players.length], score: 0, connected: true, roundVote: null,
   };
   room.players.push(player);
   if (!room.hostId) room.hostId = player.id;
@@ -153,8 +158,16 @@ function spawnFood(room) {
     room.kitty = { x: direction === 1 ? -50 : WIDTH + 50, y: rand(100, HEIGHT - 220), direction, born: Date.now() };
   }
 }
+function chooseRoundDuration(room) {
+  const options = [3, 4, 5];
+  const counts = new Map(options.map(minutes => [minutes, room.players.filter(player => player.roundVote === minutes).length]));
+  const mostVotes = Math.max(...counts.values());
+  const tiedOptions = options.filter(minutes => counts.get(minutes) === mostVotes);
+  return tiedOptions[Math.floor(Math.random() * tiedOptions.length)] * 60 * 1000;
+}
 function startGame(room) {
   room.status = 'playing'; room.winner = null; room.winners = []; room.spawned = 0; room.objects = [];
+  room.countdownUntil = null;
   room.scoreEvents = []; room.suddenDeath = false; room.suddenDeathWinner = null; room.finishReason = null;
   room.effect = { kind: 'calm', label: 'The kitchen is warming up!', until: Date.now() + 2500, gustX: 0, gustY: 0 };
   room.startedAt = Date.now(); room.nextSpawn = Date.now() + 900; room.nextEffect = Date.now() + 9000;
@@ -173,7 +186,7 @@ function handleMessage(peer, message) {
   }
   if (message.type === 'create') {
     removePlayer(peer);
-    const room = { code: makeCode(), players: [], objects: [], status: 'lobby', hostId: null, winner: null, spawned: 0, effect: null, kitty: null, scoreEvents: [] };
+    const room = { code: makeCode(), players: [], objects: [], status: 'lobby', hostId: null, winner: null, spawned: 0, effect: null, kitty: null, scoreEvents: [], roundDurationMs: GAME_DURATION_MS };
     rooms.set(room.code, room); enterRoom(peer, room, message.name, message.avatar); return;
   }
   if (message.type === 'join') {
@@ -186,10 +199,24 @@ function handleMessage(peer, message) {
   if (!room) return;
   const player = room.players.find(p => p.id === peer.playerId);
   if (!player) return;
+  if (message.type === 'voteDuration' && room.status === 'lobby') {
+    const minutes = Number(message.minutes);
+    if (![3,4,5].includes(minutes)) return sendError(peer, 'Choose a 3, 4, or 5 minute round.');
+    player.roundVote = minutes;
+    broadcast(room); return;
+  }
   if (message.type === 'start') {
     if (room.hostId !== player.id) return sendError(peer, 'Only the host can start the game.');
     if (room.players.length < 2) return sendError(peer, 'Invite at least one more player before starting.');
-    if (room.status === 'lobby' || room.status === 'over') startGame(room);
+    const missingVote = room.players.some(candidate => candidate.connected && ![3,4,5].includes(candidate.roundVote));
+    if (missingVote) return sendError(peer, 'Everyone in the room needs to vote for a round length before the host starts.');
+    if (room.status === 'lobby' || room.status === 'over') {
+      room.roundDurationMs = chooseRoundDuration(room);
+      room.winner = null; room.winners = []; room.finishReason = null; room.suddenDeath = false; room.suddenDeathWinner = null;
+      room.objects = []; room.kitty = null;
+      for (const candidate of room.players) candidate.score = 0;
+      room.status = 'countdown'; room.countdownStartedAt = Date.now(); room.countdownUntil = room.countdownStartedAt + 3000;
+    }
     broadcast(room); return;
   }
   if (message.type === 'catch' && room.status === 'playing') {
@@ -224,8 +251,12 @@ function handleMessage(peer, message) {
 function tick() {
   const now = Date.now();
   for (const room of rooms.values()) {
+    if (room.status === 'countdown') {
+      if (now >= room.countdownUntil) startGame(room);
+      else continue;
+    }
     if (room.status !== 'playing') continue;
-    if (!room.suddenDeath && now - room.startedAt >= GAME_DURATION_MS) {
+    if (!room.suddenDeath && now - room.startedAt >= (room.roundDurationMs || GAME_DURATION_MS)) {
       const topScore = Math.max(...room.players.map(player => player.score));
       const leaders = room.players.filter(player => player.score === topScore);
       if (leaders.length === 1) {
@@ -334,7 +365,7 @@ function pruneDisconnectedPlayers() {
     room.objects = room.objects.filter(o => !expired.includes(o.heldBy));
     if (!room.players.length) { rooms.delete(room.code); continue; }
     if (expired.includes(room.hostId)) room.hostId = room.players.find(p => p.connected)?.id || room.players[0].id;
-    if (room.status === 'playing' && room.players.length < 2) room.status = 'lobby';
+    if (['playing','countdown'].includes(room.status) && room.players.length < 2) { room.status = 'lobby'; room.countdownUntil = null; }
     broadcast(room);
   }
 }
@@ -343,7 +374,7 @@ setInterval(() => {
   for (const room of rooms.values()) room.scoreEvents = [];
   tick();
   for (const room of rooms.values()) {
-    if (room.status === 'playing') broadcast(room);
+    if (['playing','countdown'].includes(room.status)) broadcast(room);
     room.scoreEvents = [];
   }
 }, 50).unref();
