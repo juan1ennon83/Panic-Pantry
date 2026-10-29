@@ -1,2 +1,2 @@
 # Panic-Pantry
-A pantry management app for tracking and planning meals under pressure.
+A real-time, room-code party game for 2–8 players.
