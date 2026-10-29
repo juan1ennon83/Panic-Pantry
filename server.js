@@ -96,6 +96,20 @@ function broadcast(room) {
   for (const peer of peers) if (peer.roomCode === room.code) send(peer, packet);
 }
 function sendError(peer, message) { send(peer, { type: 'error', message }); }
+function handleTextMessage(peer, payload) {
+  let message;
+  try { message = JSON.parse(payload.toString('utf8')); }
+  catch (error) {
+    console.error('WebSocket message could not be parsed:', error.message);
+    sendError(peer, 'That request could not be read. Please try again.');
+    return;
+  }
+  try { handleMessage(peer, message); }
+  catch (error) {
+    console.error(`WebSocket ${String(message?.type || 'unknown')} request failed:`, error?.stack || error);
+    sendError(peer, 'The kitchen couldn’t process that request. Please try again.');
+  }
+}
 function removePlayer(peer) {
   if (!peer.roomCode) return;
   const room = rooms.get(peer.roomCode);
@@ -439,12 +453,12 @@ server.on('upgrade', (req, socket) => {
   if (req.url !== '/ws' || !req.headers['sec-websocket-key']) return socket.destroy();
   const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-  const peer = { socket, buffer: Buffer.alloc(0), roomCode: null, playerId: null, isAlive: true };
+  const peer = { socket, buffer: Buffer.alloc(0), roomCode: null, playerId: null, isAlive: true, fragmentOpcode: null, messageFragments: [], fragmentBytes: 0 };
   peers.add(peer);
   socket.on('data', chunk => {
     peer.buffer = Buffer.concat([peer.buffer, chunk]);
     while (peer.buffer.length >= 2) {
-      const b0 = peer.buffer[0], b1 = peer.buffer[1], opcode = b0 & 0x0f, masked = (b1 & 0x80) !== 0;
+      const b0 = peer.buffer[0], b1 = peer.buffer[1], fin = (b0 & 0x80) !== 0, opcode = b0 & 0x0f, masked = (b1 & 0x80) !== 0;
       let length = b1 & 0x7f, offset = 2;
       if (length === 126) { if (peer.buffer.length < 4) break; length = peer.buffer.readUInt16BE(2); offset = 4; }
       else if (length === 127) { if (peer.buffer.length < 10) break; length = Number(peer.buffer.readBigUInt64BE(2)); offset = 10; }
@@ -459,18 +473,23 @@ server.on('upgrade', (req, socket) => {
       if (opcode === 8) { socket.end(); break; }
       if (opcode === 9) { socket.write(makeControlFrame(10, payload)); continue; }
       if (opcode === 10) { peer.isAlive = true; continue; }
-      if (opcode === 1) {
-        let message;
-        try { message = JSON.parse(payload.toString('utf8')); }
-        catch (error) {
-          console.error('WebSocket message could not be parsed:', error.message);
-          sendError(peer, 'That request could not be read. Please try again.');
-          continue;
+      if (opcode === 0) {
+        if (peer.fragmentOpcode === null || peer.fragmentBytes + payload.length > MAX_WEBSOCKET_MESSAGE_BYTES) { socket.destroy(); return; }
+        peer.messageFragments.push(payload); peer.fragmentBytes += payload.length;
+        if (fin) {
+          const messageOpcode = peer.fragmentOpcode;
+          const messagePayload = Buffer.concat(peer.messageFragments, peer.fragmentBytes);
+          peer.fragmentOpcode = null; peer.messageFragments = []; peer.fragmentBytes = 0;
+          if (messageOpcode === 1) handleTextMessage(peer, messagePayload);
         }
-        try { handleMessage(peer, message); }
-        catch (error) {
-          console.error(`WebSocket ${String(message?.type || 'unknown')} request failed:`, error?.stack || error);
-          sendError(peer, 'The kitchen couldn’t process that request. Please try again.');
+        continue;
+      }
+      if (opcode === 1 || opcode === 2) {
+        if (peer.fragmentOpcode !== null) { socket.destroy(); return; }
+        if (fin) {
+          if (opcode === 1) handleTextMessage(peer, payload);
+        } else {
+          peer.fragmentOpcode = opcode; peer.messageFragments = [payload]; peer.fragmentBytes = payload.length;
         }
       }
     }
