@@ -128,6 +128,7 @@
     .selfie-primary { background:linear-gradient(135deg,#ff8a59,#ee637b); color:#fff; }
     .selfie-secondary { background:#e8dacb; color:#35283a; }
     .selfie-cancel { margin-top:11px; border:0; background:transparent; color:#786b7a; font-weight:800; padding:8px 12px; }
+    .sound-toggle { width:38px; height:36px; display:grid; place-items:center; padding:7px; font-size:17px; }
     .mobile-note { display:none; color:#c9bdd0; font-size:11px; margin:9px 2px 0; }
     .footer { width:min(1080px,100%); padding-top:16px; display:flex; justify-content:space-between; gap:12px; color:#94879c; font-size:10px; }
     .footer span:last-child { text-align:right; }
@@ -180,6 +181,12 @@
       .howto { max-width:70%; }
       .score-chip { min-width:91px; padding:7px 8px; }
       .score-name { max-width:54px; }
+      body.game-active .game-title-block { gap:4px; }
+      body.game-active .game-title { font-size:17px; }
+      body.game-active .code-chip { font-size:8px; letter-spacing:.04em; padding:5px 6px; }
+      body.game-active .game-actions { gap:4px; }
+      body.game-active .game-actions .copy-btn { padding:6px; }
+      body.game-active .game-actions .sound-toggle,body.game-active .fullscreen-btn { width:32px; height:32px; }
     }
   </style>
 </head>
@@ -196,8 +203,9 @@
   (() => {
     const main = document.getElementById('main');
     const socketUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
-    let ws, playerId = null, sessionKey = null, roomCode = null, isHost = false, room = null, view = 'home', playerName = '', toastTimer, gesture = null, reconnectTimer = null, reconnectAttempts = 0, reconnecting = false, pendingJoin = null, cameraStream = null, capturedSelfie = null;
+    let ws, playerId = null, sessionKey = null, roomCode = null, isHost = false, room = null, view = 'home', playerName = '', toastTimer, gesture = null, reconnectTimer = null, reconnectAttempts = 0, reconnecting = false, pendingJoin = null, cameraStream = null, capturedSelfie = null, audioContext = null, masterGain = null, audioMuted = false, musicTimer = null, musicStep = 0, lastSlideSound = 0;
     const avatarImages = new Map();
+    const heardScoreEvents = new Set();
     const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     function connect() {
       if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve();
@@ -237,6 +245,11 @@
       }
       else if (data.type === 'room') {
         room = data;
+        for (const event of data.scoreEvents || []) {
+          if (!heardScoreEvents.has(event.id)) { heardScoreEvents.add(event.id); playScoreSound(event.points); }
+        }
+        if (data.status === 'playing') startPartyMusic();
+        else stopPartyMusic();
         isHost = data.hostId === playerId;
         if (data.status === 'lobby') renderLobby();
         else renderGame();
@@ -246,6 +259,104 @@
       const el = document.getElementById('form-error') || document.getElementById('room-error');
       if (el) el.textContent = message;
       else showToast(message);
+    }
+    function getAudioContext() {
+      if (audioContext) return audioContext;
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return null;
+      try {
+        audioContext = new AudioContextClass();
+        masterGain = audioContext.createGain(); masterGain.gain.value = audioMuted ? 0 : 0.14;
+        masterGain.connect(audioContext.destination);
+      } catch { audioContext = null; masterGain = null; }
+      return audioContext;
+    }
+    function playTone(frequency,duration,type='triangle',volume=0.08,endFrequency=0,delay=0) {
+      const ac=getAudioContext();
+      if (!ac || audioMuted || ac.state !== 'running') return;
+      const start=ac.currentTime+delay, oscillator=ac.createOscillator(), gain=ac.createGain();
+      oscillator.type=type; oscillator.frequency.setValueAtTime(frequency,start);
+      if (endFrequency>0) oscillator.frequency.exponentialRampToValueAtTime(endFrequency,start+duration);
+      gain.gain.setValueAtTime(0.0001,start);
+      gain.gain.exponentialRampToValueAtTime(volume,start+Math.min(0.012,duration/3));
+      gain.gain.exponentialRampToValueAtTime(0.0001,start+duration);
+      oscillator.connect(gain); gain.connect(masterGain); oscillator.start(start); oscillator.stop(start+duration+0.02);
+    }
+    function playNoise(duration,volume=0.04) {
+      const ac=getAudioContext();
+      if (!ac || audioMuted || ac.state !== 'running') return;
+      const length=Math.max(1,Math.floor(ac.sampleRate*duration)), buffer=ac.createBuffer(1,length,ac.sampleRate), data=buffer.getChannelData(0);
+      for (let i=0;i<length;i++) data[i]=(Math.random()*2-1)*(1-i/length);
+      const source=ac.createBufferSource(), filter=ac.createBiquadFilter(), gain=ac.createGain();
+      source.buffer=buffer; filter.type='highpass'; filter.frequency.value=2400;
+      gain.gain.setValueAtTime(volume,ac.currentTime); gain.gain.exponentialRampToValueAtTime(0.0001,ac.currentTime+duration);
+      source.connect(filter); filter.connect(gain); gain.connect(masterGain); source.start(); source.stop(ac.currentTime+duration);
+    }
+    function activateAudio() {
+      const ac=getAudioContext();
+      if (!ac || audioMuted) return;
+      if (ac.state==='suspended') ac.resume().then(() => { if (room?.status==='playing') startPartyMusic(); }).catch(() => {});
+      else if (room?.status==='playing') startPartyMusic();
+    }
+    function playSlideSound() {
+      const now=performance.now();
+      if (now-lastSlideSound<115) return;
+      lastSlideSound=now;
+      const pitch=250+Math.random()*110;
+      playTone(pitch,0.085,'triangle',0.055,pitch*1.8);
+    }
+    function playScoreSound(points) {
+      if (points>0) {
+        [660,880,1175].forEach((note,i) => playTone(note,0.13,'square',0.09,0,i*0.075));
+        playNoise(0.045,0.025);
+      } else {
+        playTone(330,0.19,'sawtooth',0.095,185);
+        playTone(220,0.21,'square',0.075,115,0.08);
+      }
+    }
+    const partyMelody=[
+      523,0,659,0,784,0,659,0,587,0,698,0,880,0,698,0,
+      392,0,494,0,587,0,494,0,440,0,587,0,659,0,587,0,
+      523,0,659,0,784,0,988,0,880,0,784,0,659,0,523,0,
+      784,0,659,0,587,0,523,0,494,0,587,0,659,0,784,0,
+    ];
+    function playPartyStep() {
+      if (audioMuted || !audioContext || audioContext.state!=='running') return;
+      const step=musicStep++%64, beat=step%16, bar=Math.floor(step/16);
+      if (beat===0 || beat===8) playTone(115,0.2,'sine',0.12,42);
+      if (beat===4 || beat===12) playNoise(0.105,0.085);
+      else if (step%2===0) playNoise(0.035,0.018);
+      if (beat%4===0) playTone([131,98,110,87][bar]*(beat===8?1.5:1),0.19,'triangle',0.055);
+      if (partyMelody[step]) playTone(partyMelody[step],0.12,'square',0.038);
+    }
+    function startPartyMusic() {
+      if (audioMuted || room?.status!=='playing' || musicTimer) return;
+      const ac=getAudioContext();
+      if (!ac) return;
+      if (ac.state==='suspended') { activateAudio(); return; }
+      musicStep=0; playPartyStep(); musicTimer=setInterval(playPartyStep,125);
+    }
+    function stopPartyMusic() { clearInterval(musicTimer); musicTimer=null; musicStep=0; }
+    function syncSoundButtons() {
+      document.querySelectorAll('[data-sound-toggle]').forEach(button => {
+        const label=audioMuted?'Turn sounds on':'Mute sounds';
+        button.textContent=audioMuted?'🔇':'🔊'; button.setAttribute('aria-label',label); button.title=label; button.setAttribute('aria-pressed',String(!audioMuted));
+      });
+    }
+    function bindSoundButtons() {
+      document.querySelectorAll('[data-sound-toggle]').forEach(button => { button.onclick=toggleSound; });
+      syncSoundButtons();
+    }
+    function toggleSound() {
+      audioMuted=!audioMuted;
+      const ac=getAudioContext();
+      if (ac && masterGain) {
+        if (ac.state==='suspended' && !audioMuted) ac.resume().catch(() => {});
+        masterGain.gain.setTargetAtTime(audioMuted?0:0.14,ac.currentTime,0.03);
+      }
+      if (audioMuted) stopPartyMusic();
+      else if (room?.status==='playing') startPartyMusic();
+      syncSoundButtons();
     }
     function stopSelfieCamera() {
       cameraStream?.getTracks().forEach(track => track.stop());
@@ -261,14 +372,15 @@
     function openSelfieStep(type, name, code) {
       pendingJoin = { type, name, code };
       capturedSelfie = null;
+      const updateMode=type==='update';
       const modal = document.createElement('div');
       modal.id = 'selfie-modal'; modal.className = 'selfie-backdrop';
       modal.innerHTML = `<section class="selfie-card" role="dialog" aria-modal="true" aria-labelledby="selfie-title">
-        <p class="section-tag">Meet the kitchen crew</p><h2 id="selfie-title">Add your selfie</h2>
-        <p class="selfie-copy">Your photo will appear beside your name on your tray and be shared with players in this room. It stays in the room’s temporary memory and isn’t saved to disk. You can continue without a photo.</p>
+        <p class="section-tag">Meet the kitchen crew</p><h2 id="selfie-title">${updateMode?'Update your tray selfie':'Add your selfie'}</h2>
+        <p class="selfie-copy">Your photo will appear beside your name on your tray and be shared with players in this room. It stays in the room’s temporary memory and isn’t saved to disk. ${updateMode?'Use initials instead to remove it.':'You can continue without a photo.'}</p>
         <div class="selfie-frame"><video id="selfie-video" autoplay playsinline muted hidden></video><img id="selfie-preview" alt="Preview of your selfie" hidden></div>
         <p class="selfie-status" id="selfie-status" role="status">Turn on your front camera when you’re ready.</p>
-        <div class="selfie-actions"><button id="selfie-camera-start" class="button selfie-primary" type="button">Turn on camera</button><button id="selfie-capture" class="button selfie-primary" type="button" hidden>Take selfie</button><button id="selfie-retake" class="button selfie-secondary" type="button" hidden>Retake</button><button id="selfie-continue" class="button selfie-secondary" type="button">Continue without photo</button></div>
+        <div class="selfie-actions"><button id="selfie-camera-start" class="button selfie-primary" type="button">Turn on camera</button><button id="selfie-capture" class="button selfie-primary" type="button" hidden>Take selfie</button><button id="selfie-retake" class="button selfie-secondary" type="button" hidden>Retake</button><button id="selfie-continue" class="button selfie-secondary" type="button">${updateMode?'Use initials instead':'Continue without photo'}</button></div>
         <button id="selfie-cancel" class="selfie-cancel" type="button">Cancel</button>
       </section>`;
       document.body.append(modal);
@@ -278,6 +390,8 @@
       document.getElementById('selfie-continue').onclick = () => finishSelfieStep(null);
       document.getElementById('selfie-cancel').onclick = closeSelfieStep;
       modal.addEventListener('click', e => { if (e.target === modal) closeSelfieStep(); });
+      modal.addEventListener('keydown', e => { if (e.key === 'Escape') closeSelfieStep(); });
+      document.getElementById('selfie-camera-start').focus();
     }
     async function startSelfieCamera() {
       const startButton = document.getElementById('selfie-camera-start');
@@ -340,8 +454,10 @@
       const action = pendingJoin;
       pendingJoin = null; capturedSelfie = null;
       closeSelfieStep();
+      if (action.type === 'update') { send({type:'avatar',avatar}); return; }
       const packet = { type:action.type, name:action.name, avatar };
       if (action.type === 'join') packet.code = action.code;
+      activateAudio();
       try { await connect(); send(packet); view='lobby'; }
       catch (e) { showError(e.message); }
     }
@@ -357,6 +473,8 @@
     function renderHome() {
       document.body.classList.remove('game-active');
       avatarImages.clear();
+      heardScoreEvents.clear();
+      stopPartyMusic();
       view = 'home';
       main.innerHTML = `<section class="view landing">
         <div class="hero">
@@ -367,13 +485,13 @@
         </div>
         <section class="join-card">
           <h2 class="card-title">Pull up a stool</h2>
-          <p class="card-sub">Start a kitchen or hop into a friend’s room.</p>
+          <p class="card-sub">Start a kitchen or hop into a friend’s room. You’ll get a selfie step for your tray before you join.</p>
           <div class="field-group"><label for="player-name">Your diner name</label><input id="player-name" class="field" maxlength="16" placeholder="e.g. Pickle Boss" autocomplete="nickname"></div>
           <button id="create-room" class="button button-primary">Create a room <span aria-hidden="true">↗</span></button>
           <div class="or">or join a room</div>
           <div class="room-entry"><div><label for="room-code">Room code</label><input id="room-code" class="field room-code-input" maxlength="5" placeholder="ABCDE" autocomplete="off"></div><button id="join-room" class="button button-join">Join</button></div>
           <p class="error" id="form-error"></p>
-          <p class="fineprint">⚡ Live physics · 📱 Works on phones · 🍟 Friendly chaos</p>
+          <p class="fineprint">⚡ Live physics · 📷 Optional tray selfie · 🎵 Party sounds</p>
         </section>
       </section>`;
       const name = document.getElementById('player-name'), code = document.getElementById('room-code');
@@ -398,6 +516,7 @@
       view = 'lobby';
       isHost = room.hostId === playerId;
       const players = room.players.map(p => `<div class="player-card" style="${p.connected === false ? 'opacity:.55' : ''}"><span class="player-dot" style="--player-color:${p.color}"></span><span class="player-name">${esc(p.name)}${p.id === playerId ? ' (you)' : p.connected === false ? ' · reconnecting' : ''}</span>${p.id === room.hostId ? '<span class="host-mark">HOST</span>' : ''}</div>`).join('');
+      const hasSelfie = Boolean(room.players.find(p => p.id === playerId)?.avatarUrl);
       main.innerHTML = `<section class="view room-layout">
         <div class="room-main">
           <span class="section-tag">You’re in the kitchen</span>
@@ -413,6 +532,8 @@
           <h3>Ready for the rush?</h3>
           <p>Flick burgers and milkshakes into your own tray. Send beers and burnt burgers into an opponent’s tray to dock their points.</p>
           <div class="rules-mini"><div class="rule-mini">🍔 Burger <strong>+5</strong></div><div class="rule-mini">🥤 Milkshake <strong>+3</strong></div><div class="rule-mini">🍺 Beer <strong>−1</strong></div><div class="rule-mini">🔥 Burnt burger <strong>−2</strong></div></div>
+          <button id="selfie-edit" class="copy-btn" type="button" style="align-self:flex-start;margin-top:8px">📷 ${hasSelfie?'Change':'Add'} tray selfie</button>
+          <button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button>
           ${isHost ? `<button id="start-game" class="button start-btn" ${room.players.length < 2 ? 'disabled' : ''}>${room.players.length < 2 ? 'Waiting for a friend…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Waiting for the host</div>`}
         </aside>
       </section>`;
@@ -425,7 +546,9 @@
         try { await navigator.clipboard.writeText(`Join my Panic Pantry room ${room.code}: ${invite}`); document.getElementById('copy-invite').textContent = 'Invite copied!'; }
         catch { showToast(`Invite link: ${invite}`); }
       };
-      document.getElementById('start-game')?.addEventListener('click', () => send({type:'start'}));
+      document.getElementById('start-game')?.addEventListener('click', () => { activateAudio(); send({type:'start'}); });
+      document.getElementById('selfie-edit').onclick = () => openSelfieStep('update',playerName);
+      bindSoundButtons();
     }
 
     let canvas, ctx, gameFrame, lastEffectLabel = '';
@@ -449,7 +572,7 @@
       if (view !== 'game') {
         view = 'game';
         main.innerHTML = `<section class="view game-wrap">
-          <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">FIRST TO 100 · ${esc(room.code)}</span></div><div class="game-actions"><button id="fullscreen-game" class="copy-btn fullscreen-btn" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button><button id="leave-game" class="copy-btn">Leave</button></div></div>
+          <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">FIRST TO 100 · ${esc(room.code)}</span></div><div class="game-actions"><button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button><button id="fullscreen-game" class="copy-btn fullscreen-btn" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button><button id="leave-game" class="copy-btn">Leave</button></div></div>
           <div class="score-strip" id="score-strip"></div>
           <div class="game-shell"><canvas id="game-canvas" width="1000" height="700" aria-label="Shared diner game table"></canvas><div class="effect-banner" id="effect-banner"></div><div class="game-over" id="game-over"></div></div>
           <div class="game-bottom"><div class="howto"><span class="hand">👆</span><span>Tap food to catch · swipe toward a tray to toss</span></div><span class="held-status" id="held-status"></span></div>
@@ -465,6 +588,7 @@
         else fullscreenButton.onclick = toggleFullscreen;
         document.getElementById('leave-game').onclick = goHome;
         cancelAnimationFrame(gameFrame); animate();
+        bindSoundButtons();
       }
       updateGameUI();
     }
@@ -511,6 +635,7 @@
     }
     function onPointerDown(e) {
       if (!room || room.status !== 'playing') return;
+      activateAudio();
       const p = canvasPoint(e); canvas.setPointerCapture(e.pointerId);
       const held = room.objects.find(o => o.heldBy === playerId);
       if (held) {
@@ -521,7 +646,7 @@
       const target = room.objects.filter(o => !o.heldBy && !o.thrown).sort((a,b) => screenDistance(a,p)-screenDistance(b,p))[0];
       if (target && screenDistance(target,p) < Math.max(46,target.radius+18)*screenScaleY()) send({type:'catch',id:target.id});
     }
-    function onPointerMove(e) { if (gesture && gesture.pointerId === e.pointerId) { gesture.end = canvasPoint(e); } }
+    function onPointerMove(e) { if (gesture && gesture.pointerId === e.pointerId) { gesture.end = canvasPoint(e); playSlideSound(); } }
     function onPointerUp(e) {
       if (!gesture || gesture.pointerId !== e.pointerId) return;
       gesture.end = canvasPoint(e);
