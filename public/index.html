@@ -114,6 +114,20 @@
     .winner-card h2 { font-size:30px; letter-spacing:-.06em; margin:5px 0; }
     .winner-card p { color:#746779; font-size:13px; margin:0 0 17px; }
     .winner-card .button { width:100%; background:#2e2538; color:#fff1da; }
+    .selfie-backdrop { position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:20px; background:#100d19d9; backdrop-filter:blur(8px); }
+    .selfie-card { position:relative; width:min(420px,100%); padding:25px; border-radius:24px; background:#fff2d8; color:var(--ink); box-shadow:0 24px 70px #0009; text-align:center; }
+    .selfie-card h2 { margin:6px 0 8px; font-size:27px; letter-spacing:-.05em; }
+    .selfie-copy { margin:0 auto 17px; max-width:340px; color:#716677; font-size:13px; line-height:1.5; }
+    .selfie-frame { width:min(230px,65vw); aspect-ratio:1; margin:0 auto 12px; overflow:hidden; border:4px solid #fff; border-radius:24px; background:#332c3e; box-shadow:0 8px 22px #392a3330; }
+    .selfie-frame video,.selfie-frame img { display:block; width:100%; height:100%; object-fit:cover; }
+    .selfie-frame video { transform:scaleX(-1); }
+    .selfie-frame [hidden],.selfie-actions [hidden] { display:none !important; }
+    .selfie-status { min-height:18px; margin:0 0 12px; color:#6f6376; font-size:12px; font-weight:700; }
+    .selfie-actions { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; }
+    .selfie-actions .button { padding:11px 14px; }
+    .selfie-primary { background:linear-gradient(135deg,#ff8a59,#ee637b); color:#fff; }
+    .selfie-secondary { background:#e8dacb; color:#35283a; }
+    .selfie-cancel { margin-top:11px; border:0; background:transparent; color:#786b7a; font-weight:800; padding:8px 12px; }
     .mobile-note { display:none; color:#c9bdd0; font-size:11px; margin:9px 2px 0; }
     .footer { width:min(1080px,100%); padding-top:16px; display:flex; justify-content:space-between; gap:12px; color:#94879c; font-size:10px; }
     .footer span:last-child { text-align:right; }
@@ -182,7 +196,8 @@
   (() => {
     const main = document.getElementById('main');
     const socketUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
-    let ws, playerId = null, sessionKey = null, roomCode = null, isHost = false, room = null, view = 'home', playerName = '', toastTimer, gesture = null, reconnectTimer = null, reconnectAttempts = 0, reconnecting = false;
+    let ws, playerId = null, sessionKey = null, roomCode = null, isHost = false, room = null, view = 'home', playerName = '', toastTimer, gesture = null, reconnectTimer = null, reconnectAttempts = 0, reconnecting = false, pendingJoin = null, cameraStream = null, capturedSelfie = null;
+    const avatarImages = new Map();
     const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     function connect() {
       if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve();
@@ -232,6 +247,104 @@
       if (el) el.textContent = message;
       else showToast(message);
     }
+    function stopSelfieCamera() {
+      cameraStream?.getTracks().forEach(track => track.stop());
+      cameraStream = null;
+      const video = document.getElementById('selfie-video');
+      if (video) video.srcObject = null;
+    }
+    function closeSelfieStep() {
+      stopSelfieCamera();
+      document.getElementById('selfie-modal')?.remove();
+      pendingJoin = null; capturedSelfie = null;
+    }
+    function openSelfieStep(type, name, code) {
+      pendingJoin = { type, name, code };
+      capturedSelfie = null;
+      const modal = document.createElement('div');
+      modal.id = 'selfie-modal'; modal.className = 'selfie-backdrop';
+      modal.innerHTML = `<section class="selfie-card" role="dialog" aria-modal="true" aria-labelledby="selfie-title">
+        <p class="section-tag">Meet the kitchen crew</p><h2 id="selfie-title">Add your selfie</h2>
+        <p class="selfie-copy">Your photo will appear beside your name on your tray and be shared with players in this room. It stays in the room’s temporary memory and isn’t saved to disk. You can continue without a photo.</p>
+        <div class="selfie-frame"><video id="selfie-video" autoplay playsinline muted hidden></video><img id="selfie-preview" alt="Preview of your selfie" hidden></div>
+        <p class="selfie-status" id="selfie-status" role="status">Turn on your front camera when you’re ready.</p>
+        <div class="selfie-actions"><button id="selfie-camera-start" class="button selfie-primary" type="button">Turn on camera</button><button id="selfie-capture" class="button selfie-primary" type="button" hidden>Take selfie</button><button id="selfie-retake" class="button selfie-secondary" type="button" hidden>Retake</button><button id="selfie-continue" class="button selfie-secondary" type="button">Continue without photo</button></div>
+        <button id="selfie-cancel" class="selfie-cancel" type="button">Cancel</button>
+      </section>`;
+      document.body.append(modal);
+      document.getElementById('selfie-camera-start').onclick = startSelfieCamera;
+      document.getElementById('selfie-capture').onclick = captureSelfie;
+      document.getElementById('selfie-retake').onclick = retakeSelfie;
+      document.getElementById('selfie-continue').onclick = () => finishSelfieStep(null);
+      document.getElementById('selfie-cancel').onclick = closeSelfieStep;
+      modal.addEventListener('click', e => { if (e.target === modal) closeSelfieStep(); });
+    }
+    async function startSelfieCamera() {
+      const startButton = document.getElementById('selfie-camera-start');
+      const captureButton = document.getElementById('selfie-capture');
+      const status = document.getElementById('selfie-status');
+      if (!navigator.mediaDevices?.getUserMedia) {
+        status.textContent = 'Camera access is unavailable in this browser. You can continue without a photo.';
+        return;
+      }
+      startButton.disabled = true; status.textContent = 'Waiting for camera permission…';
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'user' }, width:{ ideal:640 }, height:{ ideal:640 } }, audio:false });
+        if (!pendingJoin || !document.getElementById('selfie-modal')) { stream.getTracks().forEach(track => track.stop()); return; }
+        cameraStream = stream;
+        const video = document.getElementById('selfie-video');
+        video.srcObject = stream; video.hidden = false;
+        await video.play();
+        startButton.hidden = true; startButton.disabled = false;
+        captureButton.hidden = false;
+        status.textContent = 'Camera ready. Take a selfie or continue without a photo.';
+      } catch {
+        stopSelfieCamera();
+        startButton.disabled = false;
+        status.textContent = 'Couldn’t start the camera. Check its permission or continue without a photo.';
+      }
+    }
+    function captureSelfie() {
+      const video = document.getElementById('selfie-video');
+      const status = document.getElementById('selfie-status');
+      if (!video?.videoWidth || !video.videoHeight) { status.textContent = 'The camera is still starting. Please try again in a moment.'; return; }
+      const size = 128, crop = Math.min(video.videoWidth,video.videoHeight);
+      const captureCanvas = document.createElement('canvas'); captureCanvas.width=size; captureCanvas.height=size;
+      const captureContext = captureCanvas.getContext('2d');
+      captureContext.translate(size,0); captureContext.scale(-1,1);
+      captureContext.drawImage(video,(video.videoWidth-crop)/2,(video.videoHeight-crop)/2,crop,crop,0,0,size,size);
+      try { capturedSelfie = captureCanvas.toDataURL('image/jpeg',0.68); }
+      catch { status.textContent = 'Couldn’t capture that selfie. Try again or continue without a photo.'; return; }
+      document.getElementById('selfie-preview').src = capturedSelfie;
+      document.getElementById('selfie-preview').hidden = false;
+      video.hidden = true; stopSelfieCamera();
+      const captureButton = document.getElementById('selfie-capture');
+      captureButton.textContent = 'Join with selfie'; captureButton.onclick = () => finishSelfieStep(capturedSelfie);
+      document.getElementById('selfie-retake').hidden = false;
+      status.textContent = 'Here’s your tray photo. Join with it or retake it.';
+    }
+    function retakeSelfie() {
+      capturedSelfie = null;
+      document.getElementById('selfie-preview').hidden = true;
+      document.getElementById('selfie-video').hidden = false;
+      document.getElementById('selfie-capture').hidden = true;
+      document.getElementById('selfie-capture').textContent = 'Take selfie';
+      document.getElementById('selfie-capture').onclick = captureSelfie;
+      document.getElementById('selfie-retake').hidden = true;
+      const startButton = document.getElementById('selfie-camera-start');
+      startButton.hidden = false; startButton.onclick = startSelfieCamera;
+      document.getElementById('selfie-status').textContent = 'Turn the front camera on again to retake your selfie.';
+    }
+    async function finishSelfieStep(avatar) {
+      if (!pendingJoin) return;
+      const action = pendingJoin;
+      pendingJoin = null; capturedSelfie = null;
+      closeSelfieStep();
+      const packet = { type:action.type, name:action.name, avatar };
+      if (action.type === 'join') packet.code = action.code;
+      try { await connect(); send(packet); view='lobby'; }
+      catch (e) { showError(e.message); }
+    }
     function showToast(message) {
       let toast = document.getElementById('toast');
       if (!toast) { toast = document.createElement('div'); toast.id = 'toast'; toast.style.cssText = 'position:fixed;z-index:10;bottom:24px;left:50%;transform:translateX(-50%);background:#fff0d7;color:#35263b;padding:12px 17px;border-radius:13px;font-size:13px;font-weight:800;box-shadow:0 9px 28px #0006;max-width:calc(100% - 30px);text-align:center'; document.body.append(toast); }
@@ -243,6 +356,7 @@
     }
     function renderHome() {
       document.body.classList.remove('game-active');
+      avatarImages.clear();
       view = 'home';
       main.innerHTML = `<section class="view landing">
         <div class="hero">
@@ -268,14 +382,12 @@
       code.addEventListener('input', () => code.value = code.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0,5));
       document.getElementById('create-room').onclick = async () => {
         playerName = name.value.trim();
-        try { await connect(); send({type:'create',name:playerName}); view='lobby'; }
-        catch (e) { showError(e.message); }
+        openSelfieStep('create', playerName);
       };
       document.getElementById('join-room').onclick = async () => {
         playerName = name.value.trim();
         if (code.value.trim().length !== 5) return showError('Enter the 5-letter room code.');
-        try { await connect(); send({type:'join',name:playerName,code:code.value.trim()}); view='lobby'; }
-        catch (e) { showError(e.message); }
+        openSelfieStep('join', playerName, code.value.trim());
       };
       code.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('join-room').click(); });
       name.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('create-room').click(); });
@@ -299,7 +411,7 @@
         <aside class="side-panel">
           <div class="side-illustration">🍔 🥤 🐈</div>
           <h3>Ready for the rush?</h3>
-          <p>Catch the flying food, then flick it toward your own tray. Watch out for the kitty.</p>
+          <p>Flick burgers and milkshakes into your own tray. Send beers and burnt burgers into an opponent’s tray to dock their points.</p>
           <div class="rules-mini"><div class="rule-mini">🍔 Burger <strong>+5</strong></div><div class="rule-mini">🥤 Milkshake <strong>+3</strong></div><div class="rule-mini">🍺 Beer <strong>−1</strong></div><div class="rule-mini">🔥 Burnt burger <strong>−2</strong></div></div>
           ${isHost ? `<button id="start-game" class="button start-btn" ${room.players.length < 2 ? 'disabled' : ''}>${room.players.length < 2 ? 'Waiting for a friend…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Waiting for the host</div>`}
         </aside>
@@ -340,8 +452,8 @@
           <div class="game-top"><div class="game-title-block"><h1 class="game-title">Panic Pantry</h1><span class="code-chip">FIRST TO 100 · ${esc(room.code)}</span></div><div class="game-actions"><button id="fullscreen-game" class="copy-btn fullscreen-btn" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button><button id="leave-game" class="copy-btn">Leave</button></div></div>
           <div class="score-strip" id="score-strip"></div>
           <div class="game-shell"><canvas id="game-canvas" width="1000" height="700" aria-label="Shared diner game table"></canvas><div class="effect-banner" id="effect-banner"></div><div class="game-over" id="game-over"></div></div>
-          <div class="game-bottom"><div class="howto"><span class="hand">👆</span><span>Tap food to catch · swipe from it toward your tray to toss</span></div><span class="held-status" id="held-status"></span></div>
-          <p class="mobile-note">Tip: hold one snack, then flick it down toward your colored tray.</p>
+          <div class="game-bottom"><div class="howto"><span class="hand">👆</span><span>Tap food to catch · swipe toward a tray to toss</span></div><span class="held-status" id="held-status"></span></div>
+          <p class="mobile-note">Good food scores in your tray; beers and burnt burgers can hit anyone’s tray.</p>
         </section>`;
         canvas = document.getElementById('game-canvas'); ctx = canvas.getContext('2d');
         canvas.addEventListener('pointerdown', onPointerDown);
@@ -362,7 +474,7 @@
       if (strip) strip.innerHTML = room.players.map(p => `<div class="score-chip ${p.id === playerId ? 'me' : ''}" style="--player-color:${p.color}"><span class="score-dot"></span><span class="score-name">${esc(p.name)}${p.id === playerId ? ' · YOU' : ''}</span><strong class="score-value">${p.score}</strong></div>`).join('');
       const held = room.objects.find(o => o.heldBy === playerId);
       const status = document.getElementById('held-status');
-      if (status) status.textContent = gesture ? 'Flick to toss!' : held ? `Holding ${held.label} · aim for your tray` : 'Catch a snack!';
+      if (status) status.textContent = gesture ? 'Flick to toss!' : held ? `Holding ${held.label} · aim for a tray` : 'Catch a snack!';
       const banner = document.getElementById('effect-banner');
       if (banner) {
         const label = room.kitty ? 'KITTY ON THE LOOSE!' : room.effect?.kind !== 'calm' ? room.effect?.label : '';
@@ -434,15 +546,33 @@
       ctx.save();ctx.strokeStyle='#e4d7aa55';ctx.setLineDash([9,13]);ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(500,330,300,210,0,0,Math.PI*2);ctx.stroke();ctx.restore();
       ctx.fillStyle='#fff2d844';ctx.font='900 15px system-ui';ctx.textAlign='center';canvasText('THE FLYING FOOD ZONE',500,42);
     }
+    function getAvatarImage(player) {
+      if (!player.avatarUrl) return null;
+      let image=avatarImages.get(player.avatarUrl);
+      if (!image) { image=new Image();image.src=player.avatarUrl;avatarImages.set(player.avatarUrl,image); }
+      return image.complete && image.naturalWidth ? image : null;
+    }
+    function drawAvatar(player,x,y,size) {
+      const image=getAvatarImage(player), radius=size/2;
+      ctx.save();ctx.translate(x,y);ctx.scale(canvasXCompensation(),1);
+      ctx.beginPath();ctx.arc(0,0,radius,0,Math.PI*2);ctx.clip();
+      if (image) ctx.drawImage(image,-radius,-radius,size,size);
+      else {
+        ctx.fillStyle=player.color;ctx.fillRect(-radius,-radius,size,size);
+        ctx.fillStyle='#fff8e8';ctx.font='900 17px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText((player.name||'?').slice(0,1).toUpperCase(),0,1);
+      }
+      ctx.restore();
+      ctx.save();ctx.translate(x,y);ctx.scale(canvasXCompensation(),1);ctx.beginPath();ctx.arc(0,0,radius,0,Math.PI*2);ctx.lineWidth=2;ctx.strokeStyle='#fff8e8';ctx.stroke();ctx.restore();
+    }
     function drawTray(tray) {
       const player=room.players.find(p=>p.id===tray.id); if(!player)return;
       const w=Math.min(115,1000/(room.players.length+0.5)), x=tray.x-w/2, y=tray.y-43;
       ctx.save();ctx.shadowColor='#14252088';ctx.shadowBlur=12;ctx.shadowOffsetY=6;
       rounded(x,y,w,60,14,'#e8bf87','#fff3d4');ctx.restore();
       rounded(x+5,y+5,w-10,49,10,'#ffffff1a',null);
-      ctx.fillStyle=player.color;ctx.save();ctx.translate(tray.x,y+16);ctx.scale(canvasXCompensation(),1);ctx.beginPath();ctx.arc(0,0,5,0,Math.PI*2);ctx.fill();ctx.restore();
-      ctx.fillStyle='#2e2931';ctx.font='900 12px system-ui';ctx.textAlign='center';canvasText(player.name.length>12?player.name.slice(0,11)+'…':player.name,tray.x,y+37);
-      ctx.fillStyle='#59443d';ctx.font='800 9px system-ui';canvasText('YOUR TRAY',tray.x,y+51);
+      drawAvatar(player,tray.x,y+17,28);
+      ctx.fillStyle='#2e2931';ctx.font='900 10px system-ui';ctx.textAlign='center';canvasText(player.name.length>12?player.name.slice(0,11)+'…':player.name,tray.x,y+43);
+      ctx.fillStyle='#59443d';ctx.font='800 8px system-ui';canvasText(player.id===playerId?'YOUR TRAY':'TRAY',tray.x,y+55);
     }
     function drawFood(obj) {
       ctx.save();

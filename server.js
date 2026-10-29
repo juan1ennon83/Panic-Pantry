@@ -7,6 +7,8 @@ const os = require('node:os');
 const PORT = Number(process.env.PORT || 4173);
 const WIDTH = 1000;
 const HEIGHT = 700;
+const MAX_WEBSOCKET_MESSAGE_BYTES = 48 * 1024;
+const MAX_AVATAR_BYTES = 32 * 1024;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const rooms = new Map();
 const peers = new Set();
@@ -28,6 +30,14 @@ function safeName(value) {
   const name = String(value || '').replace(/[<>\u0000-\u001f]/g, '').trim().slice(0, 16);
   return name || `Player ${Math.floor(rand(10, 99))}`;
 }
+function decodeAvatar(value) {
+  if (typeof value !== 'string' || value.length > 44000) return null;
+  const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  if (!match) return null;
+  const bytes = Buffer.from(match[1], 'base64');
+  if (bytes.length < 4 || bytes.length > MAX_AVATAR_BYTES || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) return null;
+  return bytes;
+}
 function makeCode() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code;
@@ -43,7 +53,10 @@ function publicRoom(room) {
   const trays = trayPositions(room);
   return {
     type: 'room', code: room.code, status: room.status,
-    players: room.players.map(({ id, name, color, score, connected }) => ({ id, name, color, score, connected })),
+    players: room.players.map(({ id, name, color, score, connected, avatar, avatarToken }) => ({
+      id, name, color, score, connected,
+      avatarUrl: avatar ? `/avatar/${room.code}/${id}/${avatarToken}` : null,
+    })),
     hostId: room.hostId,
     trays, objects: room.objects, effect: room.effect, kitty: room.kitty,
     spawned: room.spawned, winner: room.winner, winners: room.winners || [], startedAt: room.startedAt,
@@ -104,10 +117,13 @@ function disconnectPeer(peer) {
   peer.roomCode = null; peer.playerId = null;
   broadcast(room);
 }
-function enterRoom(peer, room, name) {
+function enterRoom(peer, room, name, avatarData) {
   if (room.players.length >= 8) return sendError(peer, 'This kitchen is full. The party tops out at 8 players.');
   if (room.status !== 'lobby') return sendError(peer, 'That match is already sizzling. Join before the host starts!');
-  const player = { id: crypto.randomUUID(), sessionKey: crypto.randomUUID(), name: safeName(name), color: COLORS[room.players.length], score: 0, connected: true };
+  const player = {
+    id: crypto.randomUUID(), sessionKey: crypto.randomUUID(), avatarToken: crypto.randomUUID(),
+    avatar: decodeAvatar(avatarData), name: safeName(name), color: COLORS[room.players.length], score: 0, connected: true,
+  };
   room.players.push(player);
   if (!room.hostId) room.hostId = player.id;
   peer.roomCode = room.code; peer.playerId = player.id;
@@ -152,13 +168,13 @@ function handleMessage(peer, message) {
   if (message.type === 'create') {
     removePlayer(peer);
     const room = { code: makeCode(), players: [], objects: [], status: 'lobby', hostId: null, winner: null, spawned: 0, effect: null, kitty: null };
-    rooms.set(room.code, room); enterRoom(peer, room, message.name); return;
+    rooms.set(room.code, room); enterRoom(peer, room, message.name, message.avatar); return;
   }
   if (message.type === 'join') {
     removePlayer(peer);
     const room = rooms.get(String(message.code || '').toUpperCase().trim());
     if (!room) return sendError(peer, 'We couldn’t find that room. Check the code and try again.');
-    enterRoom(peer, room, message.name); return;
+    enterRoom(peer, room, message.name, message.avatar); return;
   }
   const room = rooms.get(peer.roomCode);
   if (!room) return;
@@ -243,13 +259,13 @@ function tick() {
       if (obj.x < obj.radius || obj.x > WIDTH - obj.radius) { obj.x = Math.max(obj.radius, Math.min(WIDTH - obj.radius, obj.x)); obj.vx *= -0.82; }
       if (obj.y < obj.radius || obj.y > HEIGHT - obj.radius - 5) { obj.y = Math.max(obj.radius, Math.min(HEIGHT - obj.radius - 5, obj.y)); obj.vy *= -0.8; }
       if (obj.thrown && obj.thrownBy) {
-        const tray = trays.find(t => t.id === obj.thrownBy);
-        if (tray && obj.vy > 0 && obj.y >= tray.y - 40 && obj.y <= tray.y + 35 && Math.abs(obj.x - tray.x) <= 54) {
-          const scorer = room.players.find(p => p.id === obj.thrownBy);
-          if (scorer) {
-            const oldScore = scorer.score;
-            scorer.score = Math.max(0, scorer.score + obj.points);
-            if (oldScore < 100 && scorer.score >= 100) crossed100.add(scorer.id);
+        const targetTray = trays.find(t => obj.vy > 0 && obj.y >= t.y - 40 && obj.y <= t.y + 35 && Math.abs(obj.x - t.x) <= 54);
+        if (targetTray && (obj.points < 0 || targetTray.id === obj.thrownBy)) {
+          const recipient = room.players.find(p => p.id === targetTray.id);
+          if (recipient) {
+            const oldScore = recipient.score;
+            recipient.score = Math.max(0, recipient.score + obj.points);
+            if (oldScore < 100 && recipient.score >= 100) crossed100.add(recipient.id);
             scored.push(obj.id);
           }
         }
@@ -304,6 +320,14 @@ setInterval(() => {
 const server = http.createServer((req, res) => {
   let requestPath = decodeURIComponent((req.url || '/').split('?')[0]);
   if (requestPath === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"ok":true}'); }
+  const avatarPath = /^\/avatar\/([A-Z0-9]{5})\/([a-f0-9-]{36})\/([a-f0-9-]{36})$/i.exec(requestPath);
+  if (avatarPath) {
+    const room = rooms.get(avatarPath[1].toUpperCase());
+    const player = room?.players.find(p => p.id === avatarPath[2] && p.avatarToken === avatarPath[3]);
+    if (!player?.avatar) { res.writeHead(404); return res.end('Not found'); }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': player.avatar.length, 'Cache-Control': 'private, no-store' });
+    return res.end(player.avatar);
+  }
   if (requestPath === '/') requestPath = '/index.html';
   const filePath = path.normalize(path.join(PUBLIC_DIR, requestPath));
   if (!filePath.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end('Forbidden'); }
@@ -329,6 +353,7 @@ server.on('upgrade', (req, socket) => {
       let length = b1 & 0x7f, offset = 2;
       if (length === 126) { if (peer.buffer.length < 4) break; length = peer.buffer.readUInt16BE(2); offset = 4; }
       else if (length === 127) { if (peer.buffer.length < 10) break; length = Number(peer.buffer.readBigUInt64BE(2)); offset = 10; }
+      if (length > MAX_WEBSOCKET_MESSAGE_BYTES) { socket.destroy(); return; }
       const maskBytes = masked ? 4 : 0;
       if (peer.buffer.length < offset + maskBytes + length) break;
       const mask = masked ? peer.buffer.subarray(offset, offset + 4) : null;

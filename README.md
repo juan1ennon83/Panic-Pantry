@@ -18,14 +18,16 @@ This project includes a Render deployment blueprint. Render provides a public HT
 1. Put the contents of this folder at the root of a GitHub repository.
 2. In Render, connect that repository and create a **Blueprint** from its `render.yaml` file.
 3. Once deployment finishes, open the public `onrender.com` address and create a room.
-4. Share the invite link from the lobby. Friends can open it anywhere and enter their names; the room code is prefilled.
+4. Share the invite link from the lobby. Friends can open it anywhere, enter their names, and optionally take a selfie for their tray; the room code is prefilled.
+
+Selfies are resized in the browser and shared with the room. The server keeps them in memory only while the room exists; it does not save them to disk.
 
 The blueprint selects Render’s free web service for a hobby deployment. Free services can sleep after 15 minutes without incoming traffic, take about a minute to wake, and may restart. This game keeps rooms in server memory, so a restart ends active rooms. Keep the deployment to one server instance; multiple instances would need shared room storage. See [Render’s free service limits](https://render.com/docs/free) and [WebSocket guidance](https://render.com/docs/websocket).
 
 ## How to play
 
 - Tap a loose item to catch it. Hold one item at a time.
-- Touch the held item and swipe toward your own tray to toss it. Land the toss in your tray to score.
+- Touch the held item and swipe toward any tray to toss it. Burgers and milkshakes score only in your tray; beers and burnt burgers subtract points from whichever tray they land in.
 - Burger: +5 · Milkshake: +3 · Beer: −1 · Burnt burger: −2. Scores do not go below zero.
 - Reach 100 points first to win. A kitty appears after every 50 regular food spawns and knocks nearby items around.
 - Fan gusts, a slippery counter, and extra-bouncy moments change the physics during the match.
