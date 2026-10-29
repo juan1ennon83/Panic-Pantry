@@ -31,6 +31,9 @@ function safeName(value) {
   const name = String(value || '').replace(/[<>\u0000-\u001f]/g, '').trim().slice(0, 16);
   return name || `Player ${Math.floor(rand(10, 99))}`;
 }
+function nextPlayerColor(room) {
+  return COLORS.find(color => !room.players.some(player => player.color === color)) || COLORS[room.players.length % COLORS.length];
+}
 function decodeAvatar(value) {
   if (typeof value !== 'string' || value.length > 44000) return null;
   const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
@@ -48,7 +51,8 @@ function makeCode() {
 function trayPositions(room) {
   const count = room.players.length;
   const gap = WIDTH / (count + 1);
-  return room.players.map((p, i) => ({ id: p.id, x: gap * (i + 1), y: HEIGHT - 55, color: p.color }));
+  const width = Math.min(165, gap + 4);
+  return room.players.map((p, i) => ({ id: p.id, x: gap * (i + 1), y: HEIGHT - 55, color: p.color, width }));
 }
 function publicRoom(room) {
   const now = Date.now();
@@ -61,8 +65,8 @@ function publicRoom(room) {
     countdownRemainingMs: room.status === 'countdown' ? Math.max(0, (room.countdownUntil || now) - now) : 0,
     roundDurationMs: durationMs,
     suddenDeath: Boolean(room.suddenDeath), finishReason: room.finishReason || null,
-    players: room.players.map(({ id, name, color, score, connected, roundVote, avatar, avatarToken }) => ({
-      id, name, color, score, connected, roundVote: roundVote || null,
+    players: room.players.map(({ id, name, color, score, connected, roundVote, avatar, avatarToken, isBot }) => ({
+      id, name, color, score, connected, roundVote: roundVote || null, isBot: Boolean(isBot),
       avatarUrl: avatar ? `/avatar/${room.code}/${id}/${avatarToken}` : null,
     })),
     hostId: room.hostId,
@@ -118,7 +122,11 @@ function removePlayer(peer) {
   room.objects = room.objects.filter(o => o.heldBy !== peer.playerId);
   if (!room.players.length) rooms.delete(room.code);
   else {
-    if (room.hostId === peer.playerId) room.hostId = room.players.find(p => p.connected)?.id || room.players[0].id;
+    if (room.hostId === peer.playerId) {
+      const successor = room.players.find(p => !p.isBot && p.connected) || room.players.find(p => !p.isBot);
+      if (!successor) { rooms.delete(room.code); peer.roomCode = null; peer.playerId = null; return; }
+      room.hostId = successor.id;
+    }
     if (room.status !== 'lobby' && room.status !== 'over' && room.players.length < 2) { room.status = 'lobby'; room.countdownUntil = null; }
     broadcast(room);
   }
@@ -146,7 +154,7 @@ function enterRoom(peer, room, name, avatarData) {
   if (room.status === 'over') return sendError(peer, 'That round has ended. Ask the host to start another round after everyone joins.');
   const player = {
     id: crypto.randomUUID(), sessionKey: crypto.randomUUID(), avatarToken: crypto.randomUUID(),
-    avatar: decodeAvatar(avatarData), name: safeName(name), color: COLORS[room.players.length], score: 0, connected: true, roundVote: null,
+    avatar: decodeAvatar(avatarData), name: safeName(name), color: nextPlayerColor(room), score: 0, connected: true, roundVote: null,
   };
   room.players.push(player);
   if (!room.hostId) room.hostId = player.id;
@@ -180,7 +188,9 @@ function spawnFood(room) {
 }
 function chooseRoundDuration(room) {
   const options = [3, 4, 5];
-  const counts = new Map(options.map(minutes => [minutes, room.players.filter(player => player.id !== room.hostId && player.roundVote === minutes).length]));
+  const voters = room.players.filter(player => player.connected && player.id !== room.hostId && !player.isBot);
+  if (!voters.length) return GAME_DURATION_MS;
+  const counts = new Map(options.map(minutes => [minutes, voters.filter(player => player.roundVote === minutes).length]));
   const mostVotes = Math.max(...counts.values());
   const tiedOptions = options.filter(minutes => counts.get(minutes) === mostVotes);
   return tiedOptions[Math.floor(Math.random() * tiedOptions.length)] * 60 * 1000;
@@ -191,8 +201,46 @@ function startGame(room) {
   room.scoreEvents = []; room.suddenDeath = false; room.suddenDeathWinner = null; room.finishReason = null;
   room.effect = { kind: 'calm', label: 'The kitchen is warming up!', until: Date.now() + 2500, gustX: 0, gustY: 0 };
   room.startedAt = Date.now(); room.nextSpawn = Date.now() + 900; room.nextEffect = Date.now() + 9000;
-  for (const p of room.players) p.score = 0;
+  for (const p of room.players) {
+    p.score = 0;
+    if (p.isBot) { p.botNextActionAt = room.startedAt + rand(500, 1200); p.botThrowAt = 0; }
+  }
   for (let i = 0; i < 7; i++) spawnFood(room);
+}
+function updateBots(room, now, trays) {
+  for (const bot of room.players.filter(player => player.isBot)) {
+    const held = room.objects.find(object => object.heldBy === bot.id);
+    if (held) {
+      if (now < (bot.botThrowAt || 0)) continue;
+      const targetId = held.points > 0 ? bot.id : chooseBotOpponent(room, bot.id);
+      const targetTray = trays.find(tray => tray.id === targetId) || trays.find(tray => tray.id === bot.id);
+      if (!targetTray) continue;
+      const aimX = targetTray.x + rand(-72, 72), aimY = targetTray.y + rand(-20, 18);
+      const dx = aimX - held.x, dy = aimY - held.y, length = Math.hypot(dx, dy) || 1;
+      const speed = rand(8, 12.5);
+      held.vx = dx / length * speed; held.vy = dy / length * speed;
+      held.heldBy = null; held.heldX = undefined; held.heldY = undefined;
+      held.thrownBy = bot.id; held.thrown = true; held.createdAt = now;
+      bot.botNextActionAt = now + rand(700, 1300); bot.botThrowAt = 0;
+      continue;
+    }
+    if (now < (bot.botNextActionAt || 0)) continue;
+    const available = room.objects.filter(object => !object.heldBy && !object.thrown);
+    if (!available.length) { bot.botNextActionAt = now + 250; continue; }
+    const positive = available.filter(object => object.points > 0);
+    const candidates = positive.length && Math.random() < 0.8 ? positive : available;
+    const object = candidates[Math.floor(Math.random() * candidates.length)];
+    object.heldBy = bot.id; object.heldX = object.x; object.heldY = object.y; object.vx = 0; object.vy = 0;
+    bot.botThrowAt = now + rand(250, 500);
+  }
+}
+function chooseBotOpponent(room, botId) {
+  const humans = room.players.filter(player => player.id !== botId && !player.isBot && player.connected);
+  const opponents = humans.length ? humans : room.players.filter(player => player.id !== botId);
+  if (!opponents.length) return botId;
+  const leadScore = Math.max(...opponents.map(player => player.score));
+  const leaders = opponents.filter(player => player.score === leadScore);
+  return leaders[Math.floor(Math.random() * leaders.length)].id;
 }
 function handleMessage(peer, message) {
   if (message.type === 'resume') {
@@ -219,8 +267,28 @@ function handleMessage(peer, message) {
   if (!room) return;
   const player = room.players.find(p => p.id === peer.playerId);
   if (!player) return;
+  if (message.type === 'addBot' || message.type === 'removeBot') {
+    if (room.hostId !== player.id) return sendError(peer, 'Only the host can change the AI players.');
+    if (room.status !== 'lobby') return sendError(peer, 'AI players can only be changed from the lobby.');
+    const bots = room.players.filter(candidate => candidate.isBot);
+    if (message.type === 'addBot') {
+      if (bots.length >= 2) return sendError(peer, 'This room can have at most two AI players.');
+      if (room.players.length >= 8) return sendError(peer, 'This kitchen is full. Remove a player before adding an AI player.');
+      const botNumber = bots.length + 1;
+      room.players.push({
+        id: crypto.randomUUID(), name: `AI Chef ${botNumber}`, color: nextPlayerColor(room),
+        score: 0, connected: true, roundVote: null, isBot: true, avatar: null, avatarToken: crypto.randomUUID(),
+      });
+    } else {
+      const bot = [...bots].pop();
+      if (!bot) return sendError(peer, 'There are no AI players to remove.');
+      room.players = room.players.filter(candidate => candidate.id !== bot.id);
+      room.objects = room.objects.filter(object => object.heldBy !== bot.id);
+    }
+    broadcast(room); return;
+  }
   if (message.type === 'voteDuration' && room.status === 'lobby') {
-    if (room.hostId === player.id) return sendError(peer, 'The host sits out the round-length vote. Invited players choose the time.');
+    if (room.hostId === player.id || player.isBot) return sendError(peer, 'The host and AI players sit out the round-length vote. Invited players choose the time.');
     const minutes = Number(message.minutes);
     if (![3,4,5].includes(minutes)) return sendError(peer, 'Choose a 3, 4, or 5 minute round.');
     player.roundVote = minutes;
@@ -228,8 +296,9 @@ function handleMessage(peer, message) {
   }
   if (message.type === 'start') {
     if (room.hostId !== player.id) return sendError(peer, 'Only the host can start the game.');
-    const connectedInvitees = room.players.filter(candidate => candidate.connected && candidate.id !== room.hostId);
-    if (!connectedInvitees.length) return sendError(peer, 'Invite at least one other player before starting.');
+    const connectedOpponents = room.players.filter(candidate => candidate.id !== room.hostId && (candidate.isBot || candidate.connected));
+    if (!connectedOpponents.length) return sendError(peer, 'Invite a friend or add an AI player before starting.');
+    const connectedInvitees = connectedOpponents.filter(candidate => !candidate.isBot);
     const missingVote = connectedInvitees.some(candidate => ![3,4,5].includes(candidate.roundVote));
     if (missingVote) return sendError(peer, 'Every connected invited player needs to vote for a round length before the host starts.');
     if (room.status === 'lobby' || room.status === 'over') {
@@ -290,6 +359,7 @@ function tick() {
     }
     const trays = trayPositions(room);
     if (now >= room.nextSpawn) { spawnFood(room); room.nextSpawn = now + rand(1150, 1850); }
+    updateBots(room, now, trays);
     if (now >= room.nextEffect) {
       const effects = [
         { kind: 'gust', label: 'FAN BLAST!', gustX: rand(-0.18, 0.18), gustY: rand(-0.12, 0.12) },
@@ -355,7 +425,7 @@ function tick() {
       if (obj.x < obj.radius || obj.x > WIDTH - obj.radius) { obj.x = Math.max(obj.radius, Math.min(WIDTH - obj.radius, obj.x)); obj.vx *= -0.82; }
       if (obj.y < obj.radius || obj.y > HEIGHT - obj.radius - 5) { obj.y = Math.max(obj.radius, Math.min(HEIGHT - obj.radius - 5, obj.y)); obj.vy *= -0.8; }
       if (obj.thrown && (obj.thrownBy || obj.kittyTouched)) {
-        const targetTray = trays.find(t => obj.vy > 0 && obj.y >= t.y - 40 && obj.y <= t.y + 35 && Math.abs(obj.x - t.x) <= 54);
+        const targetTray = trays.find(t => obj.vy > 0 && obj.y >= t.y - 40 && obj.y <= t.y + 35 && Math.abs(obj.x - t.x) <= (t.width || 108) / 2 - 5);
         if (targetTray && (obj.points < 0 || targetTray.id === obj.thrownBy || obj.kittyTouched) && !room.suddenDeathWinner) {
           const recipient = room.players.find(p => p.id === targetTray.id);
           if (recipient) {
@@ -411,7 +481,8 @@ function pruneDisconnectedPlayers() {
     room.players = room.players.filter(p => !expired.includes(p.id));
     room.objects = room.objects.filter(o => !expired.includes(o.heldBy));
     if (!room.players.length) { rooms.delete(room.code); continue; }
-    if (expired.includes(room.hostId)) room.hostId = room.players.find(p => p.connected)?.id || room.players[0].id;
+    if (!room.players.some(p => !p.isBot)) { rooms.delete(room.code); continue; }
+    if (expired.includes(room.hostId)) room.hostId = room.players.find(p => !p.isBot && p.connected)?.id || room.players.find(p => !p.isBot)?.id;
     if (['playing','countdown'].includes(room.status) && room.players.length < 2) { room.status = 'lobby'; room.countdownUntil = null; }
     broadcast(room);
   }

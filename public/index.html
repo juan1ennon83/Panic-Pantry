@@ -73,10 +73,19 @@
     .copy-btn { border:1px solid #ffffff30; color:#eee4ef; background:#ffffff0b; border-radius:11px; padding:11px 13px; font-size:12px; font-weight:800; }
     .players-title { display:flex; justify-content:space-between; align-items:center; color:#d9cddd; font-size:12px; font-weight:850; text-transform:uppercase; letter-spacing:.1em; margin-bottom:10px; }
     .player-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
-    .player-card { display:flex; align-items:center; gap:10px; border:1px solid #ffffff19; background:#ffffff09; border-radius:12px; padding:10px 12px; min-width:0; }
-    .player-dot { width:12px;height:12px;flex:none;border-radius:50%;box-shadow:0 0 0 4px color-mix(in srgb, var(--player-color) 18%, transparent); background:var(--player-color); }
+    .player-card { display:flex; align-items:center; gap:10px; border:1px solid #ffffff19; background:#ffffff09; border-radius:12px; padding:9px 11px; min-width:0; }
+    .player-avatar { width:40px;height:40px;flex:none;border-radius:50%;object-fit:cover;border:2px solid #fff5;background:var(--player-color);color:#fff8e8;display:grid;place-items:center;font-size:18px;font-weight:900; }
+    .bot-mark { margin-left:auto;font-size:10px;color:#a9f0da;background:#36b8a122;border-radius:99px;padding:4px 6px; }
     .player-name { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:800;font-size:13px; }
     .host-mark { margin-left:auto;font-size:10px;color:#ffd27c;background:#ffd27c19;border-radius:99px;padding:4px 6px; }
+    .bot-controls { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding:12px;border:1px solid #ffffff1c;border-radius:14px;background:#ffffff08; }
+    .bot-info { min-width:0; }
+    .bot-info strong { display:block;color:#ffcf72;font-size:12px; }
+    .bot-info span { display:block;margin-top:3px;color:#c9bdd0;font-size:10px;line-height:1.35; }
+    .bot-control-actions { display:flex;gap:6px;flex:none; }
+    .bot-control-actions .copy-btn { padding:9px 11px; }
+    .bot-control-actions .copy-btn:disabled { opacity:.4;cursor:not-allowed; }
+    .bot-note { margin:14px 0 0;color:#c9bdd0;font-size:11px; }
     .side-panel { padding:22px; display:flex; flex-direction:column; justify-content:center; }
     .side-illustration { text-align:center; font-size:54px; margin:3px 0 14px; filter:drop-shadow(0 7px 8px #0004); }
     .side-panel h3 { margin:0 0 7px; font-size:21px; letter-spacing:-.04em; }
@@ -220,7 +229,7 @@
       <div class="live-pill"><span class="live-dot"></span> REAL-TIME MAYHEM</div>
     </header>
     <main id="main"></main>
-    <footer class="footer"><span>Made for friendly chaos · 2–8 players</span><span>Best served with friends and questionable aim.</span></footer>
+    <footer class="footer"><span>Made for friendly chaos · 1–8 players · up to 2 AI</span><span>Best served with friends and questionable aim.</span></footer>
   </div>
   <script>
   (() => {
@@ -552,7 +561,7 @@
       view = 'home';
       main.innerHTML = `<section class="view landing">
         <div class="hero">
-          <div class="eyebrow">✦ The kitchen is open · 2–8 players</div>
+          <div class="eyebrow">✦ The kitchen is open · 1–8 players · up to 2 AI</div>
           <h1>PANIC<span>PANTRY</span></h1>
           <p class="hero-copy">Catch flying snacks and flick them into your tray. Vote together for a 3, 4, or 5 minute round. Hit 100 first, or lead when time ends; ties trigger sudden death!</p>
           <div class="food-stamp" aria-hidden="true"><span>🍔</span><span>🥤</span><span>🍺</span><span>🐈</span></div>
@@ -590,11 +599,14 @@
       view = 'lobby';
       isHost = room.hostId === playerId;
       const roundChoices = [3,4,5];
+      const botCount = room.players.filter(p => p.isBot).length;
       const connectedPlayers = room.players.filter(p => p.connected !== false);
-      const invitees = connectedPlayers.filter(p => p.id !== room.hostId);
+      const opponents = connectedPlayers.filter(p => p.id !== room.hostId);
+      const invitees = opponents.filter(p => !p.isBot);
       const missingVotes = invitees.filter(p => !roundChoices.includes(p.roundVote)).length;
-      const allConnectedVoted = invitees.length > 0 && missingVotes === 0;
-      const voteCounts = roundChoices.map(minutes => [minutes, room.players.filter(p => p.id !== room.hostId && p.roundVote === minutes).length]);
+      const allConnectedVoted = missingVotes === 0;
+      const canStart = opponents.length > 0 && allConnectedVoted;
+      const voteCounts = roundChoices.map(minutes => [minutes, room.players.filter(p => p.connected !== false && p.id !== room.hostId && !p.isBot && p.roundVote === minutes).length]);
       const totalVotes = voteCounts.reduce((sum, [,count]) => sum + count, 0);
       const myVote = room.players.find(p => p.id === playerId)?.roundVote;
       const voteOptions = voteCounts.map(([minutes,count]) => {
@@ -605,11 +617,19 @@
           : `<button type="button" class="duration-vote ${selected ? 'selected' : ''}" data-duration="${minutes}" aria-pressed="${selected}">${content}</button>`;
       }).join('');
       const voteNote = !invitees.length
-        ? 'Waiting for an invited player to join. The host does not vote.'
+        ? botCount ? 'AI players do not vote, so this round will use the 3-minute default.' : 'Waiting for an invited player to join. The host does not vote.'
         : allConnectedVoted
           ? `${totalVotes} invitee vote${totalVotes === 1 ? '' : 's'} in. The host sits this vote out; ties are picked at random.`
           : `${missingVotes} invited player${missingVotes === 1 ? '' : 's'} still need to vote. The host does not vote.`;
-      const players = room.players.map(p => `<div class="player-card" style="${p.connected === false ? 'opacity:.55' : ''}"><span class="player-dot" style="--player-color:${p.color}"></span><span class="player-name">${esc(p.name)}${p.id === playerId ? ' (you)' : p.connected === false ? ' · reconnecting' : ''}</span>${p.id === room.hostId ? '<span class="host-mark">HOST</span>' : ''}</div>`).join('');
+      const players = room.players.map(p => {
+        const avatar = p.isBot
+          ? `<span class="player-avatar" style="--player-color:${p.color}">🤖</span>`
+          : p.avatarUrl
+            ? `<img class="player-avatar" src="${esc(p.avatarUrl)}" alt="">`
+            : `<span class="player-avatar" style="--player-color:${p.color}">${esc(p.name.slice(0,1).toUpperCase())}</span>`;
+        const badge = p.isBot ? '<span class="bot-mark">AI</span>' : p.id === room.hostId ? '<span class="host-mark">HOST</span>' : '';
+        return `<div class="player-card" style="${p.connected === false ? 'opacity:.55' : ''}">${avatar}<span class="player-name">${esc(p.name)}${p.id === playerId ? ' (you)' : p.connected === false ? ' · reconnecting' : ''}</span>${badge}</div>`;
+      }).join('');
       const hasSelfie = Boolean(room.players.find(p => p.id === playerId)?.avatarUrl);
       main.innerHTML = `<section class="view room-layout">
         <div class="room-main">
@@ -619,18 +639,19 @@
           <div class="code-box"><span class="code-display">${esc(room.code)}</span><button class="copy-btn" id="copy-code">Copy code</button><button class="copy-btn" id="copy-invite">Copy invite link</button></div>
           <div class="players-title"><span>At the counter</span><span>${room.players.length} / 8</span></div>
           <div class="player-list">${players}</div>
+          ${isHost ? `<div class="bot-controls"><div class="bot-info"><strong>AI chefs · ${botCount}/2</strong><span>Two people plus two bots make four players.</span></div><div class="bot-control-actions"><button class="copy-btn" type="button" data-bot-action="add" ${botCount >= 2 || room.players.length >= 8 ? 'disabled' : ''}>Add AI</button><button class="copy-btn" type="button" data-bot-action="remove" ${botCount < 1 ? 'disabled' : ''}>Remove</button></div></div>` : `<p class="bot-note">AI chefs in room: ${botCount}/2</p>`}
           <p class="error" id="room-error"></p>
         </div>
         <aside class="side-panel">
           <div class="side-illustration">🍔 🥤 🐈</div>
           <h3>Ready for the rush?</h3>
-          <p>Invited players vote for a 3, 4, or 5 minute round; the host sits out. The most popular time wins, with tied votes settled randomly. Reach 100 first, or lead on points when time runs out. A tied score triggers sudden death.</p>
+          <p>Invited human players vote for a 3, 4, or 5 minute round; the host and AI players sit out. The most popular time wins, with tied votes settled randomly. Reach 100 first, or lead on points when time runs out. A tied score triggers sudden death.</p>
           <div class="rules-mini"><div class="rule-mini">🍔 Burger <strong>+5</strong></div><div class="rule-mini">🥤 Milkshake <strong>+3</strong></div><div class="rule-mini">🍺 Beer <strong>−1</strong></div><div class="rule-mini">🔥 Burnt burger <strong>−2</strong></div></div>
           <p class="kitty-note">🐈 When no kitty is active, each food spawn has a 1-in-30 chance of bringing it in. It roams for five seconds and flings any food it bumps; bumped food can score in any tray.</p>
           <div class="duration-poll"><div class="duration-poll-title">${isHost ? 'Invitees choose the round length' : 'Pick the round length'}</div><div class="duration-options">${voteOptions}</div><p class="duration-poll-note">${voteNote}</p></div>
           <button id="selfie-edit" class="copy-btn" type="button" style="align-self:flex-start;margin-top:8px">📷 ${hasSelfie?'Change':'Add'} tray selfie</button>
           <button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button>
-          ${isHost ? `<button id="start-game" class="button start-btn" ${!allConnectedVoted ? 'disabled' : ''}>${!invitees.length ? 'Waiting for an invited player…' : !allConnectedVoted ? 'Waiting for invitees to vote…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Vote, then wait for the host</div>`}
+          ${isHost ? `<button id="start-game" class="button start-btn" ${!canStart ? 'disabled' : ''}>${!opponents.length ? 'Waiting for a friend or AI chef…' : invitees.length && !allConnectedVoted ? 'Waiting for invitees to vote…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Vote, then wait for the host</div>`}
         </aside>
       </section>`;
       document.getElementById('copy-code').onclick = async () => {
@@ -643,6 +664,7 @@
         catch { showToast(`Invite link: ${invite}`); }
       };
       document.getElementById('start-game')?.addEventListener('click', () => { activateAudio(); send({type:'start'}); });
+      document.querySelectorAll('[data-bot-action]').forEach(button => button.addEventListener('click', () => send({type:button.dataset.botAction === 'add' ? 'addBot' : 'removeBot'})));
       document.querySelectorAll('[data-duration]').forEach(button => button.addEventListener('click', () => send({type:'voteDuration',minutes:Number(button.dataset.duration)})));
       document.getElementById('selfie-edit').onclick = () => openSelfieStep('update',playerName);
       bindSoundButtons();
@@ -698,7 +720,7 @@
         const timer = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
         const timerState = room.suddenDeath ? 'sudden' : room.status === 'over' ? 'final' : '';
         const timerCaption = starting ? 'Starting in' : room.suddenDeath ? 'Sudden death' : room.status === 'over' ? 'Round over' : 'Time left';
-        strip.innerHTML = `<div class="timer-chip ${timerState}"><span class="timer-caption">${timerCaption}</span><strong class="timer-value">${timer}</strong></div>` + room.players.map(p => `<div class="score-chip ${p.id === playerId ? 'me' : ''}" style="--player-color:${p.color}"><span class="score-dot"></span><span class="score-name">${esc(p.name)}${p.id === playerId ? ' · YOU' : ''}</span><strong class="score-value">${p.score}</strong></div>`).join('');
+        strip.innerHTML = `<div class="timer-chip ${timerState}"><span class="timer-caption">${timerCaption}</span><strong class="timer-value">${timer}</strong></div>` + room.players.map(p => `<div class="score-chip ${p.id === playerId ? 'me' : ''}" style="--player-color:${p.color}"><span class="score-dot"></span><span class="score-name">${p.isBot ? '🤖 ' : ''}${esc(p.name)}${p.id === playerId ? ' · YOU' : ''}</span><strong class="score-value">${p.score}</strong></div>`).join('');
       }
       const countdown = document.getElementById('round-countdown');
       if (countdown) {
@@ -795,36 +817,42 @@
       const image=getAvatarImage(player), radius=size/2;
       ctx.save();ctx.translate(x,y);ctx.scale(canvasXCompensation(),1);
       ctx.beginPath();ctx.arc(0,0,radius,0,Math.PI*2);ctx.clip();
-      if (image) ctx.drawImage(image,-radius,-radius,size,size);
+      if (player.isBot) {
+        ctx.fillStyle=player.color;ctx.fillRect(-radius,-radius,size,size);
+        ctx.font=`${Math.round(size*.62)}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🤖',0,1);
+      }
+      else if (image) ctx.drawImage(image,-radius,-radius,size,size);
       else {
         ctx.fillStyle=player.color;ctx.fillRect(-radius,-radius,size,size);
-        ctx.fillStyle='#fff8e8';ctx.font='900 17px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText((player.name||'?').slice(0,1).toUpperCase(),0,1);
+        ctx.fillStyle='#fff8e8';ctx.font=`900 ${Math.round(size*.58)}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText((player.name||'?').slice(0,1).toUpperCase(),0,1);
       }
       ctx.restore();
       ctx.save();ctx.translate(x,y);ctx.scale(canvasXCompensation(),1);ctx.beginPath();ctx.arc(0,0,radius,0,Math.PI*2);ctx.lineWidth=2;ctx.strokeStyle='#fff8e8';ctx.stroke();ctx.restore();
     }
     function drawTray(tray) {
       const player=room.players.find(p=>p.id===tray.id); if(!player)return;
-      const w=Math.min(115,1000/(room.players.length+0.5)), x=tray.x-w/2, y=tray.y-43;
+      const w=Math.min(165,1000/(room.players.length+1)+4), x=tray.x-w/2, y=tray.y-76;
       ctx.save();ctx.shadowColor='#14252088';ctx.shadowBlur=12;ctx.shadowOffsetY=6;
-      rounded(x,y,w,60,14,'#e8bf87','#fff3d4');ctx.restore();
-      rounded(x+5,y+5,w-10,49,10,'#ffffff1a',null);
-      drawAvatar(player,tray.x,y+17,28);
-      ctx.fillStyle='#2e2931';ctx.font='900 10px system-ui';ctx.textAlign='center';canvasText(player.name.length>12?player.name.slice(0,11)+'…':player.name,tray.x,y+43);
-      ctx.fillStyle='#59443d';ctx.font='800 8px system-ui';canvasText(player.id===playerId?'YOUR TRAY':'TRAY',tray.x,y+55);
+      rounded(x,y,w,82,16,'#e8bf87','#fff3d4');ctx.restore();
+      rounded(x+5,y+5,w-10,72,12,'#ffffff1a',null);
+      drawAvatar(player,tray.x,y+25,44);
+      const nameLimit=w<130?10:14, displayName=player.name.length>nameLimit?player.name.slice(0,nameLimit-1)+'…':player.name;
+      ctx.fillStyle='#2e2931';ctx.font='900 11px system-ui';ctx.textAlign='center';canvasText(displayName,tray.x,y+57);
+      ctx.fillStyle='#59443d';ctx.font='800 8px system-ui';canvasText(player.id===playerId?'YOUR TRAY':player.isBot?'AI TRAY':'TRAY',tray.x,y+73);
     }
     function drawFood(obj) {
       ctx.save();
       const held=obj.heldBy===playerId;
+      const botHeld=Boolean(obj.heldBy&&room.players.some(p=>p.id===obj.heldBy&&p.isBot));
       ctx.translate(obj.x,obj.y);ctx.rotate(Math.sin(obj.wobble)*.12);
       ctx.scale(canvasXCompensation(),1);
-      ctx.shadowColor=held?'#fff4b9':'#17251f77';ctx.shadowBlur=held?22:9;ctx.shadowOffsetY=4;
+      ctx.shadowColor=held?'#fff4b9':botHeld?'#8bf2ce':'#17251f77';ctx.shadowBlur=held||botHeld?22:9;ctx.shadowOffsetY=4;
       ctx.beginPath();ctx.ellipse(0,0,obj.radius+3,obj.radius*.78+3,0,0,Math.PI*2);
       ctx.fillStyle=held?'#fff1b5':'#f6eadb';ctx.fill();
       ctx.shadowColor='transparent';ctx.font=obj.kind==='burnt'?'26px system-ui':'31px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(obj.emoji,0,1);
       rounded(-19,17,38,16,7,obj.points < 0 ? '#9b4d50' : '#276b53',null);
       ctx.fillStyle='#fff6db';ctx.font='900 10px system-ui';ctx.textBaseline='middle';ctx.fillText(`${obj.points > 0 ? '+' : ''}${obj.points}`,0,25);
-      if (held) { ctx.strokeStyle='#fff6ad';ctx.lineWidth=3;ctx.beginPath();ctx.arc(0,0,obj.radius+9,0,Math.PI*2);ctx.stroke(); }
+      if (held||botHeld) { ctx.strokeStyle=held?'#fff6ad':'#8bf2ce';ctx.lineWidth=3;ctx.beginPath();ctx.arc(0,0,obj.radius+9,0,Math.PI*2);ctx.stroke(); }
       if (obj.thrownBy===playerId) { ctx.fillStyle='#fff4d9';ctx.font='900 10px system-ui';ctx.fillText('✦',obj.radius+7,-obj.radius); }
       ctx.restore();
     }

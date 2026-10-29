@@ -1,6 +1,6 @@
 # Panic Pantry
 
-A real-time, room-code party game for 2–8 players. The server uses only Node.js built-ins.
+A real-time, room-code party game for 1–8 people, with up to two AI players. The server uses only Node.js built-ins.
 
 ## Start a kitchen
 
@@ -9,7 +9,7 @@ A real-time, room-code party game for 2–8 players. The server uses only Node.j
 3. Open the `http://localhost:4173` address printed in the terminal.
 4. Share the other printed address with friends on the same Wi-Fi. They open that address on their phones, then join with the room code.
 
-The host creates the room and starts the game once at least one other player has joined. The room code is only for joining; players also need the game address. The lobby has a **Copy invite link** button that includes both.
+The host creates the room and starts the game once a friend joins or an AI chef is added. The room code is only for joining; players also need the game address. The lobby has a **Copy invite link** button that includes both.
 
 ## Let people join from anywhere
 
@@ -33,6 +33,7 @@ The blueprint selects Render’s free web service for a hobby deployment. Free s
 - A goofy synthesized party loop plays in the lobby and during rounds, with a squeak while swiping and separate happy/sour sounds on tray hits. Use the speaker button to mute it.
 - Burger: +5 · Milkshake: +3 · Beer: −1 · Burnt burger: −2. Scores do not go below zero.
 - In the lobby, every connected invited player votes for 3, 4, or 5 minutes; the host does not vote. The most popular length wins; ties between lengths are settled randomly. The host can start after every connected invitee has voted, then a 3-second countdown begins.
+- The host can add up to two AI chefs in the lobby. They catch and toss food like players, count toward the eight-seat limit, and do not vote. If there are no human invitees to vote, the round uses the 3-minute default.
 - The chosen round length appears beside the scores. Reach 100 points first to win; if nobody does, the highest score when time runs out wins.
 - If the score is tied when the timer ends, sudden death starts: the first positive food into your own tray or negative food into an opponent’s tray wins for the scorer/thrower.
 - When no kitty is active, each food spawn has a 1-in-30 chance of bringing it in. It roams randomly across the whole table for five seconds; food it bumps can score in whichever tray it lands in. In sudden death, a bumped positive item wins for that tray's player.
