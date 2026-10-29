@@ -590,12 +590,24 @@
       isHost = room.hostId === playerId;
       const roundChoices = [3,4,5];
       const connectedPlayers = room.players.filter(p => p.connected !== false);
-      const missingVotes = connectedPlayers.filter(p => !roundChoices.includes(p.roundVote)).length;
-      const allConnectedVoted = missingVotes === 0;
-      const voteCounts = roundChoices.map(minutes => [minutes, room.players.filter(p => p.roundVote === minutes).length]);
+      const invitees = connectedPlayers.filter(p => p.id !== room.hostId);
+      const missingVotes = invitees.filter(p => !roundChoices.includes(p.roundVote)).length;
+      const allConnectedVoted = invitees.length > 0 && missingVotes === 0;
+      const voteCounts = roundChoices.map(minutes => [minutes, room.players.filter(p => p.id !== room.hostId && p.roundVote === minutes).length]);
       const totalVotes = voteCounts.reduce((sum, [,count]) => sum + count, 0);
-      const voteOptions = voteCounts.map(([minutes,count]) => `<button type="button" class="duration-vote ${room.players.find(p => p.id === playerId)?.roundVote === minutes ? 'selected' : ''}" data-duration="${minutes}" aria-pressed="${room.players.find(p => p.id === playerId)?.roundVote === minutes}"><strong>${minutes} min</strong><span>${count} vote${count === 1 ? '' : 's'}</span></button>`).join('');
-      const voteNote = allConnectedVoted ? `${totalVotes} vote${totalVotes === 1 ? '' : 's'} in. Tied choices are picked at random.` : `${missingVotes} player${missingVotes === 1 ? '' : 's'} still need to vote.`;
+      const myVote = room.players.find(p => p.id === playerId)?.roundVote;
+      const voteOptions = voteCounts.map(([minutes,count]) => {
+        const selected = !isHost && myVote === minutes;
+        const content = `<strong>${minutes} min</strong><span>${count} vote${count === 1 ? '' : 's'}</span>`;
+        return isHost
+          ? `<div class="duration-vote" aria-label="${minutes} minute round, ${count} votes">${content}</div>`
+          : `<button type="button" class="duration-vote ${selected ? 'selected' : ''}" data-duration="${minutes}" aria-pressed="${selected}">${content}</button>`;
+      }).join('');
+      const voteNote = !invitees.length
+        ? 'Waiting for an invited player to join. The host does not vote.'
+        : allConnectedVoted
+          ? `${totalVotes} invitee vote${totalVotes === 1 ? '' : 's'} in. The host sits this vote out; ties are picked at random.`
+          : `${missingVotes} invited player${missingVotes === 1 ? '' : 's'} still need to vote. The host does not vote.`;
       const players = room.players.map(p => `<div class="player-card" style="${p.connected === false ? 'opacity:.55' : ''}"><span class="player-dot" style="--player-color:${p.color}"></span><span class="player-name">${esc(p.name)}${p.id === playerId ? ' (you)' : p.connected === false ? ' · reconnecting' : ''}</span>${p.id === room.hostId ? '<span class="host-mark">HOST</span>' : ''}</div>`).join('');
       const hasSelfie = Boolean(room.players.find(p => p.id === playerId)?.avatarUrl);
       main.innerHTML = `<section class="view room-layout">
@@ -611,12 +623,12 @@
         <aside class="side-panel">
           <div class="side-illustration">🍔 🥤 🐈</div>
           <h3>Ready for the rush?</h3>
-          <p>Vote for a 3, 4, or 5 minute round. The most popular time wins; tied votes are settled randomly. Reach 100 first, or lead on points when time runs out. A tied score triggers sudden death.</p>
+          <p>Invited players vote for a 3, 4, or 5 minute round; the host sits out. The most popular time wins, with tied votes settled randomly. Reach 100 first, or lead on points when time runs out. A tied score triggers sudden death.</p>
           <div class="rules-mini"><div class="rule-mini">🍔 Burger <strong>+5</strong></div><div class="rule-mini">🥤 Milkshake <strong>+3</strong></div><div class="rule-mini">🍺 Beer <strong>−1</strong></div><div class="rule-mini">🔥 Burnt burger <strong>−2</strong></div></div>
-          <div class="duration-poll"><div class="duration-poll-title">Pick the round length</div><div class="duration-options">${voteOptions}</div><p class="duration-poll-note">${voteNote}</p></div>
+          <div class="duration-poll"><div class="duration-poll-title">${isHost ? 'Invitees choose the round length' : 'Pick the round length'}</div><div class="duration-options">${voteOptions}</div><p class="duration-poll-note">${voteNote}</p></div>
           <button id="selfie-edit" class="copy-btn" type="button" style="align-self:flex-start;margin-top:8px">📷 ${hasSelfie?'Change':'Add'} tray selfie</button>
           <button class="copy-btn sound-toggle" data-sound-toggle type="button" aria-label="Mute sounds" title="Mute sounds">🔊</button>
-          ${isHost ? `<button id="start-game" class="button start-btn" ${room.players.length < 2 || !allConnectedVoted ? 'disabled' : ''}>${room.players.length < 2 ? 'Waiting for a friend…' : !allConnectedVoted ? 'Waiting for everyone to vote…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Vote, then wait for the host</div>`}
+          ${isHost ? `<button id="start-game" class="button start-btn" ${!allConnectedVoted ? 'disabled' : ''}>${!invitees.length ? 'Waiting for an invited player…' : !allConnectedVoted ? 'Waiting for invitees to vote…' : 'Start the mayhem! ✦'}</button>` : `<div class="live-pill" style="justify-content:center;margin-top:12px"><span class="live-dot"></span> Vote, then wait for the host</div>`}
         </aside>
       </section>`;
       document.getElementById('copy-code').onclick = async () => {

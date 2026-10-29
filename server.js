@@ -160,7 +160,7 @@ function spawnFood(room) {
 }
 function chooseRoundDuration(room) {
   const options = [3, 4, 5];
-  const counts = new Map(options.map(minutes => [minutes, room.players.filter(player => player.roundVote === minutes).length]));
+  const counts = new Map(options.map(minutes => [minutes, room.players.filter(player => player.id !== room.hostId && player.roundVote === minutes).length]));
   const mostVotes = Math.max(...counts.values());
   const tiedOptions = options.filter(minutes => counts.get(minutes) === mostVotes);
   return tiedOptions[Math.floor(Math.random() * tiedOptions.length)] * 60 * 1000;
@@ -200,6 +200,7 @@ function handleMessage(peer, message) {
   const player = room.players.find(p => p.id === peer.playerId);
   if (!player) return;
   if (message.type === 'voteDuration' && room.status === 'lobby') {
+    if (room.hostId === player.id) return sendError(peer, 'The host sits out the round-length vote. Invited players choose the time.');
     const minutes = Number(message.minutes);
     if (![3,4,5].includes(minutes)) return sendError(peer, 'Choose a 3, 4, or 5 minute round.');
     player.roundVote = minutes;
@@ -207,9 +208,10 @@ function handleMessage(peer, message) {
   }
   if (message.type === 'start') {
     if (room.hostId !== player.id) return sendError(peer, 'Only the host can start the game.');
-    if (room.players.length < 2) return sendError(peer, 'Invite at least one more player before starting.');
-    const missingVote = room.players.some(candidate => candidate.connected && ![3,4,5].includes(candidate.roundVote));
-    if (missingVote) return sendError(peer, 'Everyone in the room needs to vote for a round length before the host starts.');
+    const connectedInvitees = room.players.filter(candidate => candidate.connected && candidate.id !== room.hostId);
+    if (!connectedInvitees.length) return sendError(peer, 'Invite at least one other player before starting.');
+    const missingVote = connectedInvitees.some(candidate => ![3,4,5].includes(candidate.roundVote));
+    if (missingVote) return sendError(peer, 'Every connected invited player needs to vote for a round length before the host starts.');
     if (room.status === 'lobby' || room.status === 'over') {
       room.roundDurationMs = chooseRoundDuration(room);
       room.winner = null; room.winners = []; room.finishReason = null; room.suddenDeath = false; room.suddenDeathWinner = null;
